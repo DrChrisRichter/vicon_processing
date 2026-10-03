@@ -145,6 +145,7 @@ while True:
 
         if can_rigid_fill:
             # Find the closest valid frame BEFORE the gap where all 4 markers exist
+            print(f'filling gap {m}: {gap}')
             f_pre = None
             for f in range(gap['start'] - 1, -1, -1):
                 if all(track_data[m]['e'][f] for m in markers):
