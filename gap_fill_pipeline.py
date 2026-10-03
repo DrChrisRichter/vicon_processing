@@ -226,10 +226,16 @@ while True:
 # ---------------------------------------------------------
 print("Writing data back to Nexus...")
 for m in markers:
+    # Cast NumPy types back to standard Python floats and booleans
+    x_clean = [float(val) for val in track_data[m]['x']]
+    y_clean = [float(val) for val in track_data[m]['y']]
+    z_clean = [float(val) for val in track_data[m]['z']]
+    e_clean = [bool(val) for val in track_data[m]['e']]
+
     vicon.SetTrajectory(subject, m,
-                        track_data[m]['x'],
-                        track_data[m]['y'],
-                        track_data[m]['z'],
-                        track_data[m]['e'])
+                        x_clean,
+                        y_clean,
+                        z_clean,
+                        e_clean)
 
 print("Pipeline complete.")
