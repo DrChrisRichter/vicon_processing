@@ -56,7 +56,7 @@ def apply_spline_fill(data, gap, pad=5):
     z_spline = CubicSpline(valid_idx, [data['z'][i] for i in valid_idx])
 
     for i in range(start, end + 1):
-        data['x'][i], data['y'][i], data['z'][i] = x_spline(i), y_spline(i), z_spline(i)
+        data['x'][i], data['y'][i], data['z'][i] = float(x_spline(i)), float(y_spline(i)), float(z_spline(i))
         data['e'][i] = True
     return True
 
@@ -250,15 +250,10 @@ while True:
 print("Writing data back to Nexus...")
 for m in markers:
     # Cast NumPy types back to standard Python floats and booleans
-    x_clean = [float(val) for val in track_data[m]['x']]
-    y_clean = [float(val) for val in track_data[m]['y']]
-    z_clean = [float(val) for val in track_data[m]['z']]
-    e_clean = [bool(val) for val in track_data[m]['e']]
-
     vicon.SetTrajectory(subject, m,
-                        x_clean,
-                        y_clean,
-                        z_clean,
-                        e_clean)
+                        track_data[m]['x'],
+                        track_data[m]['y'],
+                        track_data[m]['z'],
+                        track_data[m]['e'])
 
 print("Pipeline complete.")
