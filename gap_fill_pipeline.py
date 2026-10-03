@@ -1,11 +1,31 @@
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.signal import butter, filtfilt
 from viconnexusapi import ViconNexus
 
 
 # ---------------------------------------------------------
 # 1. Helper Math & Fill Functions
 # ---------------------------------------------------------
+
+def smooth_gap_segment(segment, fs, cutoff=15, order=4):
+    """Applies a Butterworth filter ONLY to the filled gap."""
+    if len(segment) < 3:
+        return segment  # Too short to have meaningful jitter
+
+    nyquist = 0.5 * fs
+    normal_cutoff = cutoff / nyquist
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+
+    # Manually pad with 30 copies of the edge frames so the filter has room to run
+    pad_size = 30
+    padded = np.concatenate(([segment[0]] * pad_size, segment, [segment[-1]] * pad_size))
+
+    smoothed_padded = filtfilt(b, a, padded)
+
+    # Slice out and return only the original segment
+    return smoothed_padded[pad_size: -pad_size]
+
 def get_gaps(exists_array):
     """Finds all gaps in a boolean existence array."""
     gaps, start, in_gap = [], 0, False
@@ -77,6 +97,7 @@ def apply_pattern_fill(target_data, donor_data, gap):
 # 2. Main Script Logic
 # ---------------------------------------------------------
 vicon = ViconNexus.ViconNexus()
+frame_rate = vicon.GetFrameRate()
 subject = vicon.GetSubjectNames()[0]
 markers = ['C7', 'T10', 'CLAV', 'STRN']
 
@@ -144,61 +165,63 @@ while True:
                 break
 
         if can_rigid_fill:
-            # Find the closest valid frame BEFORE the gap where all 4 markers exist
+            # Find the closest valid frames BEFORE and AFTER the gap
             f_pre = None
             for f in range(gap['start'] - 1, -1, -1):
                 if all(track_data[m]['e'][f] for m in markers):
-                    f_pre = f
+                    f_pre = f;
                     break
-
-            # Find the closest valid frame AFTER the gap where all 4 markers exist
             f_post = None
             for f in range(gap['end'] + 1, total_frames):
                 if all(track_data[m]['e'][f] for m in markers):
-                    f_post = f
+                    f_post = f;
                     break
 
-            # Handle edge cases (if gap is at the very start or very end of the trial)
             if f_pre is None: f_pre = f_post
             if f_post is None: f_post = f_pre
-            if f_pre is None and f_post is None: f_pre = f_post = ref_frame  # Fallback
+            if f_pre is None and f_post is None: f_pre = f_post = ref_frame
 
-            # Extract the actual marker relationships (postures) at those specific frames
             pose_pre = {m: np.array([track_data[m]['x'][f_pre], track_data[m]['y'][f_pre], track_data[m]['z'][f_pre]])
                         for m in markers}
             pose_post = {
                 m: np.array([track_data[m]['x'][f_post], track_data[m]['y'][f_post], track_data[m]['z'][f_post]]) for m
                 in markers}
 
-            # Reconstruct missing target frame by frame using the blended approach
+            # 1. Calculate the raw blended reconstruction
+            recon_x, recon_y, recon_z = [], [], []
             for i in range(gap['start'], gap['end'] + 1):
-                # Current positions of the donor markers
                 B_pts = np.array(
                     [[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in m_donors])
 
-                # Estimate 1: Using pre-gap posture
                 A_pts_pre = np.array([pose_pre[d] for d in m_donors])
                 R_pre, t_pre = get_rigid_transform(A_pts_pre, B_pts)
                 pos_pre = np.dot(R_pre, pose_pre[m_target].T) + t_pre.T
 
-                # Estimate 2: Using post-gap posture
                 A_pts_post = np.array([pose_post[d] for d in m_donors])
                 R_post, t_post = get_rigid_transform(A_pts_post, B_pts)
                 pos_post = np.dot(R_post, pose_post[m_target].T) + t_post.T
 
-                # Calculate blending weight (0.0 near start, 1.0 near end)
                 weight = (i - gap['start'] + 1) / (gap['end'] - gap['start'] + 2)
-
-                # Linearly interpolate between the two estimates
                 target_reconstructed = (1.0 - weight) * pos_pre + weight * pos_post
 
-                track_data[m_target]['x'][i] = target_reconstructed[0]
-                track_data[m_target]['y'][i] = target_reconstructed[1]
-                track_data[m_target]['z'][i] = target_reconstructed[2]
+                recon_x.append(target_reconstructed[0])
+                recon_y.append(target_reconstructed[1])
+                recon_z.append(target_reconstructed[2])
+
+            # 2. Apply the filter ONLY to this filled segment
+            recon_x = smooth_gap_segment(recon_x, frame_rate, cutoff=15)
+            recon_y = smooth_gap_segment(recon_y, frame_rate, cutoff=15)
+            recon_z = smooth_gap_segment(recon_z, frame_rate, cutoff=15)
+
+            # 3. Write the smoothed fill back into the track data
+            for idx, i in enumerate(range(gap['start'], gap['end'] + 1)):
+                track_data[m_target]['x'][i] = float(recon_x[idx])
+                track_data[m_target]['y'][i] = float(recon_y[idx])
+                track_data[m_target]['z'][i] = float(recon_z[idx])
                 track_data[m_target]['e'][i] = True
 
             progress_made = True
-            break  # Break and re-evaluate gaps since data changed
+            break# Break and re-evaluate gaps since data changed
 
     # 2. If no Rigid Body fill is possible, find the smallest gap to Pattern Fill
     # This might unlock a Rigid Body fill in the next iteration.
