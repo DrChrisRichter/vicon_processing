@@ -21,12 +21,14 @@ SEGMENTS = {
     },
     'Pelvis': {
         'primary': ['LASI', 'RASI', 'LPSI', 'RPSI'],
-        'emergency': ['SACR'],  # If using a sacral tracking marker
+        'emergency': ['RPEL', 'LPEL'],  # If using a sacral tracking marker
         'hierarchy': {
             'LASI': ['RASI', 'LPSI', 'RPSI'],
             'RASI': ['LASI', 'RPSI', 'LPSI'],
             'LPSI': ['RPSI', 'LASI', 'RASI'],
-            'RPSI': ['LPSI', 'RASI', 'LASI']
+            'RPSI': ['LPSI', 'RASI', 'LASI'],
+            'RPEL': ['RPSI', 'LASI', 'RASI'],
+            'LPEL': ['LPSI', 'RASI', 'LASI']
         },
         'max_displacement_mm': 35.0
     }
