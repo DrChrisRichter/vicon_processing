@@ -96,6 +96,7 @@ for m in markers:
     gaps = get_gaps(track_data[m]['e'])
     for gap in gaps:
         if gap['length'] <= 5:
+            print(f'fill {m}: {gap}')
             apply_spline_fill(track_data[m], gap)
 
 # ---------------------------------------------------------
@@ -110,10 +111,6 @@ for i in range(total_frames):
 
 if ref_frame is None:
     raise ValueError("No frame found where all 4 thorax markers exist simultaneously.")
-
-ref_pose = {m: np.array([track_data[m]['x'][ref_frame],
-                         track_data[m]['y'][ref_frame],
-                         track_data[m]['z'][ref_frame]]) for m in markers}
 
 # ---------------------------------------------------------
 # STEP C: Iterative Rigid Body and Pattern Fill Loop
@@ -148,6 +145,7 @@ while True:
 
         if can_rigid_fill:
             # Reconstruct missing target frame by frame
+            print('fill')
             for i in range(gap['start'], gap['end'] + 1):
                 A_pts = np.array([ref_pose[d] for d in m_donors])
                 B_pts = np.array(
@@ -170,6 +168,7 @@ while True:
     # 2. If no Rigid Body fill is possible, find the smallest gap to Pattern Fill
     # This might unlock a Rigid Body fill in the next iteration.
     for gap in all_gaps:
+
         m_target = gap['marker']
         m_donors = [m for m in markers if m != m_target]
 
