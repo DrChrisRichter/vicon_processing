@@ -131,7 +131,7 @@ while True:
     all_gaps.sort(key=lambda g: g['length'])
     progress_made = False
 
-    # 1. Attempt Rigid Body Fill for as many as possible
+    # 1. Attempt Blended Rigid Body Fill for as many as possible
     for gap in all_gaps:
         m_target = gap['marker']
         m_donors = [m for m in markers if m != m_target]
@@ -144,16 +144,54 @@ while True:
                 break
 
         if can_rigid_fill:
-            # Reconstruct missing target frame by frame
-            print('fill')
+            # Find the closest valid frame BEFORE the gap where all 4 markers exist
+            f_pre = None
+            for f in range(gap['start'] - 1, -1, -1):
+                if all(track_data[m]['e'][f] for m in markers):
+                    f_pre = f
+                    break
+
+            # Find the closest valid frame AFTER the gap where all 4 markers exist
+            f_post = None
+            for f in range(gap['end'] + 1, total_frames):
+                if all(track_data[m]['e'][f] for m in markers):
+                    f_post = f
+                    break
+
+            # Handle edge cases (if gap is at the very start or very end of the trial)
+            if f_pre is None: f_pre = f_post
+            if f_post is None: f_post = f_pre
+            if f_pre is None and f_post is None: f_pre = f_post = ref_frame  # Fallback
+
+            # Extract the actual marker relationships (postures) at those specific frames
+            pose_pre = {m: np.array([track_data[m]['x'][f_pre], track_data[m]['y'][f_pre], track_data[m]['z'][f_pre]])
+                        for m in markers}
+            pose_post = {
+                m: np.array([track_data[m]['x'][f_post], track_data[m]['y'][f_post], track_data[m]['z'][f_post]]) for m
+                in markers}
+
+            # Reconstruct missing target frame by frame using the blended approach
             for i in range(gap['start'], gap['end'] + 1):
-                A_pts = np.array([ref_pose[d] for d in m_donors])
+                # Current positions of the donor markers
                 B_pts = np.array(
                     [[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in m_donors])
 
-                R, t = get_rigid_transform(A_pts, B_pts)
+                # Estimate 1: Using pre-gap posture
+                A_pts_pre = np.array([pose_pre[d] for d in m_donors])
+                R_pre, t_pre = get_rigid_transform(A_pts_pre, B_pts)
+                pos_pre = np.dot(R_pre, pose_pre[m_target].T) + t_pre.T
 
-                target_reconstructed = np.dot(R, ref_pose[m_target].T) + t.T
+                # Estimate 2: Using post-gap posture
+                A_pts_post = np.array([pose_post[d] for d in m_donors])
+                R_post, t_post = get_rigid_transform(A_pts_post, B_pts)
+                pos_post = np.dot(R_post, pose_post[m_target].T) + t_post.T
+
+                # Calculate blending weight (0.0 near start, 1.0 near end)
+                weight = (i - gap['start'] + 1) / (gap['end'] - gap['start'] + 2)
+
+                # Linearly interpolate between the two estimates
+                target_reconstructed = (1.0 - weight) * pos_pre + weight * pos_post
+
                 track_data[m_target]['x'][i] = target_reconstructed[0]
                 track_data[m_target]['y'][i] = target_reconstructed[1]
                 track_data[m_target]['z'][i] = target_reconstructed[2]
@@ -161,9 +199,6 @@ while True:
 
             progress_made = True
             break  # Break and re-evaluate gaps since data changed
-
-    if progress_made:
-        continue  # Restart while loop
 
     # 2. If no Rigid Body fill is possible, find the smallest gap to Pattern Fill
     # This might unlock a Rigid Body fill in the next iteration.
