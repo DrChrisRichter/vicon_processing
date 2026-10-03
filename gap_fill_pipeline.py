@@ -11,17 +11,16 @@ SEGMENTS = {
         'primary': ['C7', 'T10', 'CLAV', 'STRN'],
         'emergency': ['LSHO', 'RSHO'],
         'hierarchy': {
-            'C7': ['T10', 'CLAV', 'STRN'],
-            'T10': ['C7', 'STRN', 'CLAV'],
+            'C7':   ['T10', 'CLAV', 'STRN'],
+            'T10':  ['C7', 'STRN', 'CLAV'],
             'CLAV': ['STRN', 'C7', 'T10'],
             'STRN': ['CLAV', 'T10', 'C7']
         },
-        # 30mm per frame at 100Hz = 3 m/s. Adjust if using higher framerates.
         'max_displacement_mm': 30.0
     },
     'Pelvis': {
-        'primary': ['LASI', 'RASI', 'LPSI', 'RPSI'],
-        'emergency': ['RPEL', 'LPEL'],  # If using a sacral tracking marker
+        'primary': ['LASI', 'RASI', 'LPSI', 'RPSI', 'RPEL', 'LPEL'],
+        'emergency': ['RPEL', 'LPEL'],
         'hierarchy': {
             'LASI': ['RASI', 'LPSI', 'RPSI'],
             'RASI': ['LASI', 'RPSI', 'LPSI'],
@@ -31,6 +30,66 @@ SEGMENTS = {
             'LPEL': ['LPSI', 'RASI', 'LASI']
         },
         'max_displacement_mm': 35.0
+    },
+    'Left_Thigh': {
+        'primary': ['LTHIA', 'LKNE', 'MKNE'],
+        'emergency': ['LASI', 'LPSI'],
+        'hierarchy': {
+            'LTHIA': ['LKNE', 'MKNE', 'LASI'],
+            'LKNE':  ['LTHIA', 'MKNE', 'LASI'],
+            'MKNE':  ['LTHIA', 'LKNE', 'LASI']
+        },
+        'max_displacement_mm': 40.0 # Thighs undergo higher linear acceleration
+    },
+    'Right_Thigh': {
+        'primary': ['RTHIA', 'RKNE', 'RMKN'],
+        'emergency': ['RASI', 'RPSI'],
+        'hierarchy': {
+            'RTHIA': ['RKNE', 'RMKN', 'RASI'],
+            'RKNE':  ['RTHIA', 'RMKN', 'RASI'],
+            'RMKN':  ['RTHIA', 'RKNE', 'RASI']
+        },
+        'max_displacement_mm': 40.0
+    },
+    'Left_Shank': {
+        'primary': ['LTIBA', 'LANK', 'LEMA'], # LEMA = Lateral Epicondyle / Knee joint center proxy
+        'emergency': ['LKNE', 'MKNE'],
+        'hierarchy': {
+            'LTIBA': ['LANK', 'LEMA', 'LKNE'],
+            'LANK':  ['LTIBA', 'LEMA', 'LKNE'],
+            'LEMA':  ['LTIBA', 'LANK', 'LKNE']
+        },
+        'max_displacement_mm': 45.0
+    },
+    'Right_Shank': {
+        'primary': ['RTIBA', 'RANK', 'REMA'],
+        'emergency': ['RKNE', 'RMKN'],
+        'hierarchy': {
+            'RTIBA': ['RANK', 'REMA', 'RKNE'],
+            'RANK':  ['RTIBA', 'REMA', 'RKNE'],
+            'REMA':  ['RTIBA', 'RANK', 'RKNE']
+        },
+        'max_displacement_mm': 45.0
+    },
+    'Left_Foot': {
+        'primary': ['LHEE', 'LTOE', 'LANK'],
+        'emergency': ['LMETA'], # 5th Metatarsal if available
+        'hierarchy': {
+            'LHEE': ['LTOE', 'LANK'],
+            'LTOE': ['LHEE', 'LANK'],
+            'LANK': ['LHEE', 'LTOE']
+        },
+        'max_displacement_mm': 50.0 # High impact velocity during ground contact
+    },
+    'Right_Foot': {
+        'primary': ['RHEE', 'RTOE', 'RANK'],
+        'emergency': ['RMETA'],
+        'hierarchy': {
+            'RHEE': ['RTOE', 'RANK'],
+            'RTOE': ['RHEE', 'RANK'],
+            'RANK': ['RHEE', 'RTOE']
+        },
+        'max_displacement_mm': 50.0
     }
 }
 
