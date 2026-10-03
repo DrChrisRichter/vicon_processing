@@ -1,33 +1,13 @@
 import numpy as np
 from scipy.interpolate import CubicSpline
-from scipy.signal import butter, filtfilt
+from scipy.signal import savgol_filter
 from viconnexusapi import ViconNexus
 
 
 # ---------------------------------------------------------
-# 1. Helper Math & Fill Functions
+# 1. Helper Functions
 # ---------------------------------------------------------
-
-def smooth_gap_segment(segment, fs, cutoff=15, order=4):
-    """Applies a Butterworth filter ONLY to the filled gap."""
-    if len(segment) < 3:
-        return segment  # Too short to have meaningful jitter
-
-    nyquist = 0.5 * fs
-    normal_cutoff = cutoff / nyquist
-    b, a = butter(order, normal_cutoff, btype='low', analog=False)
-
-    # Manually pad with 30 copies of the edge frames so the filter has room to run
-    pad_size = 30
-    padded = np.concatenate(([segment[0]] * pad_size, segment, [segment[-1]] * pad_size))
-
-    smoothed_padded = filtfilt(b, a, padded)
-
-    # Slice out and return only the original segment
-    return smoothed_padded[pad_size: -pad_size]
-
 def get_gaps(exists_array):
-    """Finds all gaps in a boolean existence array."""
     gaps, start, in_gap = [], 0, False
     for i, val in enumerate(exists_array):
         if not val and not in_gap:
@@ -40,220 +20,254 @@ def get_gaps(exists_array):
     return gaps
 
 
-def apply_spline_fill(data, gap, pad=5):
-    """Fills a gap using a cubic spline based on surrounding frames."""
+def smooth_gap_segment(segment):
+    """Uses a Savitzky-Golay filter to smooth fills while preserving peak impacts."""
+    length = len(segment)
+    if length < 5:
+        return segment  # Too short to filter without distortion
+
+    # Window length must be odd and less than or equal to segment length
+    window_length = min(length if length % 2 != 0 else length - 1, 15)
+    polyorder = 3 if window_length > 3 else 2
+
+    return savgol_filter(segment, window_length, polyorder, mode='interp')
+
+
+def get_weighted_rigid_transform(A, B, weights):
+    """Calculates Rotation and Translation using a distance-weighted Kabsch algorithm."""
+    weights = np.array(weights)
+    weights = weights / np.sum(weights)
+    W = weights.reshape(-1, 1)
+
+    centroid_A = np.sum(A * W, axis=0)
+    centroid_B = np.sum(B * W, axis=0)
+
+    A_centered = A - centroid_A
+    B_centered = B - centroid_B
+
+    H = np.dot(A_centered.T, (B_centered * W))
+    U, S, Vt = np.linalg.svd(H)
+    R = np.dot(Vt.T, U.T)
+
+    if np.linalg.det(R) < 0:
+        Vt[2, :] *= -1
+        R = np.dot(Vt.T, U.T)
+
+    t = centroid_B.T - np.dot(R, centroid_A.T)
+    return R, t
+
+
+def apply_dual_pattern_fill(target_data, donor_data, gap):
     start, end = gap['start'], gap['end']
-    pre_start = max(0, start - pad)
-    post_end = min(len(data['e']) - 1, end + pad)
+    anc_pre, anc_post = start - 1, end + 1
 
-    # Gather valid indices around the gap
+    has_pre = anc_pre >= 0 and target_data['e'][anc_pre] and donor_data['e'][anc_pre]
+    has_post = anc_post < len(target_data['e']) and target_data['e'][anc_post] and donor_data['e'][anc_post]
+
+    for i in range(start, end + 1):
+        if not donor_data['e'][i]: return False
+
+    if not has_pre and not has_post: return False
+
+    recon_x, recon_y, recon_z = [], [], []
+    for i in range(start, end + 1):
+        if has_pre:
+            x_pre = target_data['x'][anc_pre] + (donor_data['x'][i] - donor_data['x'][anc_pre])
+            y_pre = target_data['y'][anc_pre] + (donor_data['y'][i] - donor_data['y'][anc_pre])
+            z_pre = target_data['z'][anc_pre] + (donor_data['z'][i] - donor_data['z'][anc_pre])
+        if has_post:
+            x_post = target_data['x'][anc_post] + (donor_data['x'][i] - donor_data['x'][anc_post])
+            y_post = target_data['y'][anc_post] + (donor_data['y'][i] - donor_data['y'][anc_post])
+            z_post = target_data['z'][anc_post] + (donor_data['z'][i] - donor_data['z'][anc_post])
+
+        if has_pre and has_post:
+            w = (i - start + 1) / (end - start + 2)
+            recon_x.append((1.0 - w) * x_pre + w * x_post)
+            recon_y.append((1.0 - w) * y_pre + w * y_post)
+            recon_z.append((1.0 - w) * z_pre + w * z_post)
+        elif has_pre:
+            recon_x.append(x_pre);
+            recon_y.append(y_pre);
+            recon_z.append(z_pre)
+        else:
+            recon_x.append(x_post);
+            recon_y.append(y_post);
+            recon_z.append(z_post)
+
+    recon_x = smooth_gap_segment(recon_x)
+    recon_y = smooth_gap_segment(recon_y)
+    recon_z = smooth_gap_segment(recon_z)
+
+    for idx, i in enumerate(range(start, end + 1)):
+        target_data['x'][i], target_data['y'][i], target_data['z'][i] = recon_x[idx], recon_y[idx], recon_z[idx]
+        target_data['e'][i] = True
+    return True
+
+
+def apply_spline_fill(data, gap, pad=5):
+    start, end = gap['start'], gap['end']
+    pre_start, post_end = max(0, start - pad), min(len(data['e']) - 1, end + pad)
     valid_idx = [i for i in range(pre_start, post_end + 1) if data['e'][i] and (i < start or i > end)]
-    if len(valid_idx) < 4:
-        return False  # Not enough points for a cubic spline
 
+    if len(valid_idx) < 4: return False
     x_spline = CubicSpline(valid_idx, [data['x'][i] for i in valid_idx])
     y_spline = CubicSpline(valid_idx, [data['y'][i] for i in valid_idx])
     z_spline = CubicSpline(valid_idx, [data['z'][i] for i in valid_idx])
 
     for i in range(start, end + 1):
-        data['x'][i], data['y'][i], data['z'][i] = float(x_spline(i)), float(y_spline(i)), float(z_spline(i))
+        data['x'][i], data['y'][i], data['z'][i] = x_spline(i), y_spline(i), z_spline(i)
         data['e'][i] = True
     return True
 
 
-def get_rigid_transform(A, B):
-    """Calculates Rotation and Translation to move point cloud A to B using Kabsch."""
-    centroid_A = np.mean(A, axis=0)
-    centroid_B = np.mean(B, axis=0)
-    H = np.dot((A - centroid_A).T, (B - centroid_B))
-    U, S, Vt = np.linalg.svd(H)
-    R = np.dot(Vt.T, U.T)
-    if np.linalg.det(R) < 0:
-        Vt[2, :] *= -1
-        R = np.dot(Vt.T, U.T)
-    t = centroid_B.T - np.dot(R, centroid_A.T)
-    return R, t
-
-
-def apply_pattern_fill(target_data, donor_data, gap):
-    """Fills a gap by copying the displacement pattern of a donor marker."""
-    start, end = gap['start'], gap['end']
-    anchor = start - 1  # Frame right before gap
-
-    if anchor < 0 or not target_data['e'][anchor]:
-        return False  # Needs a valid anchor frame
-
-    for i in range(start, end + 1):
-        if not donor_data['e'][i]: return False  # Donor must exist during gap
-
-        target_data['x'][i] = target_data['x'][anchor] + (donor_data['x'][i] - donor_data['x'][anchor])
-        target_data['y'][i] = target_data['y'][anchor] + (donor_data['y'][i] - donor_data['y'][anchor])
-        target_data['z'][i] = target_data['z'][anchor] + (donor_data['z'][i] - donor_data['z'][anchor])
-        target_data['e'][i] = True
-    return True
-
-
 # ---------------------------------------------------------
-# 2. Main Script Logic
+# 2. Initialization & Data Loading
 # ---------------------------------------------------------
 vicon = ViconNexus.ViconNexus()
-frame_rate = vicon.GetFrameRate()
 subject = vicon.GetSubjectNames()[0]
-markers = ['C7', 'T10', 'CLAV', 'STRN']
 
-# Load trajectory data into a dictionary
+primary_markers = ['C7', 'T10', 'CLAV', 'STRN']
+emergency_markers = ['LSHO', 'RSHO']
+all_markers = primary_markers + emergency_markers
+
+donor_preferences = {
+    'C7': ['T10', 'CLAV', 'STRN'],
+    'T10': ['C7', 'STRN', 'CLAV'],
+    'CLAV': ['STRN', 'C7', 'T10'],
+    'STRN': ['CLAV', 'T10', 'C7']
+}
+
 track_data = {}
-for m in markers:
+for m in all_markers:
     x, y, z, e = vicon.GetTrajectory(subject, m)
     track_data[m] = {'x': list(x), 'y': list(y), 'z': list(z), 'e': list(e)}
+total_frames = len(track_data[primary_markers[0]]['e'])
 
-total_frames = len(track_data[markers[0]]['e'])
+vicon.DisplayMessage("Initializing optimized data cleaning pipeline...")
 
-# ---------------------------------------------------------
-# STEP A: Spline fill all gaps <= 5 frames
-# ---------------------------------------------------------
-print("Executing Spline Fills for gaps <= 5 frames...")
-for m in markers:
-    gaps = get_gaps(track_data[m]['e'])
-    for gap in gaps:
-        if gap['length'] <= 5:
-            print(f'fill {m}: {gap}')
-            apply_spline_fill(track_data[m], gap)
+# Initialize gap list once to prevent heavy CPU recalculation cycles
+all_gaps = []
+for m in primary_markers:
+    for g in get_gaps(track_data[m]['e']):
+        all_gaps.append({'marker': m, 'start': g['start'], 'end': g['end'], 'length': g['length']})
 
 # ---------------------------------------------------------
-# STEP B: Extract Reference Pose for Rigid Body Fills
+# STEP A: Iterative Blended Rigid Body & Dual Pattern Fill
 # ---------------------------------------------------------
-# Find a "perfect" frame where all 4 markers exist to serve as the rigid body reference
-ref_frame = None
-for i in range(total_frames):
-    if all(track_data[m]['e'][i] for m in markers):
-        ref_frame = i
-        break
-
-if ref_frame is None:
-    raise ValueError("No frame found where all 4 thorax markers exist simultaneously.")
-
-# ---------------------------------------------------------
-# STEP C: Iterative Rigid Body and Pattern Fill Loop
-# ---------------------------------------------------------
-print("Executing Iterative Rigid Body and Pattern Fills...")
-while True:
-    # Gather all remaining gaps across the 4 markers
-    all_gaps = []
-    for m in markers:
-        for g in get_gaps(track_data[m]['e']):
-            all_gaps.append({'marker': m, 'start': g['start'], 'end': g['end'], 'length': g['length']})
-
-    if not all_gaps:
-        print("All Thorax gaps successfully filled.")
-        break
-
-    # Rank remaining gaps by length (shortest first)
+while all_gaps:
     all_gaps.sort(key=lambda g: g['length'])
     progress_made = False
 
-    # 1. Attempt Blended Rigid Body Fill for as many as possible
+    # 1. Blended Distance-Weighted Rigid Body Fill
+    unfilled_gaps = []
     for gap in all_gaps:
         m_target = gap['marker']
-        m_donors = [m for m in markers if m != m_target]
+        m_donors_primary = [m for m in primary_markers if m != m_target]
 
-        # Check if the 3 donor markers exist for the entire duration of the gap
-        can_rigid_fill = True
-        for i in range(gap['start'], gap['end'] + 1):
-            if not all(track_data[d]['e'][i] for d in m_donors):
-                can_rigid_fill = False
-                break
+        valid_donors = [d for d in m_donors_primary if
+                        all(track_data[d]['e'][i] for i in range(gap['start'], gap['end'] + 1))]
+        if len(valid_donors) < 3:
+            valid_emergency = [d for d in emergency_markers if
+                               all(track_data[d]['e'][i] for i in range(gap['start'], gap['end'] + 1))]
+            valid_donors.extend(valid_emergency)
 
-        if can_rigid_fill:
-            # Find the closest valid frames BEFORE and AFTER the gap
-            f_pre = None
-            for f in range(gap['start'] - 1, -1, -1):
-                if all(track_data[m]['e'][f] for m in markers):
-                    f_pre = f;
-                    break
-            f_post = None
-            for f in range(gap['end'] + 1, total_frames):
-                if all(track_data[m]['e'][f] for m in markers):
-                    f_post = f;
-                    break
+        if len(valid_donors) >= 3:
+            f_pre = next((f for f in range(gap['start'] - 1, -1, -1) if
+                          all(track_data[m]['e'][f] for m in valid_donors + [m_target])), None)
+            f_post = next((f for f in range(gap['end'] + 1, total_frames) if
+                           all(track_data[m]['e'][f] for m in valid_donors + [m_target])), None)
 
             if f_pre is None: f_pre = f_post
             if f_post is None: f_post = f_pre
-            if f_pre is None and f_post is None: f_pre = f_post = ref_frame
+            if f_pre is None:
+                unfilled_gaps.append(gap)
+                continue
 
             pose_pre = {m: np.array([track_data[m]['x'][f_pre], track_data[m]['y'][f_pre], track_data[m]['z'][f_pre]])
-                        for m in markers}
+                        for m in valid_donors + [m_target]}
             pose_post = {
                 m: np.array([track_data[m]['x'][f_post], track_data[m]['y'][f_post], track_data[m]['z'][f_post]]) for m
-                in markers}
+                in valid_donors + [m_target]}
 
-            # 1. Calculate the raw blended reconstruction
+            A_pts_pre = np.array([pose_pre[d] for d in valid_donors])
+            weights_pre = 1.0 / (np.linalg.norm(A_pts_pre - pose_pre[m_target], axis=1) + 1e-6)
+
+            A_pts_post = np.array([pose_post[d] for d in valid_donors])
+            weights_post = 1.0 / (np.linalg.norm(A_pts_post - pose_post[m_target], axis=1) + 1e-6)
+
             recon_x, recon_y, recon_z = [], [], []
             for i in range(gap['start'], gap['end'] + 1):
                 B_pts = np.array(
-                    [[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in m_donors])
+                    [[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in valid_donors])
 
-                A_pts_pre = np.array([pose_pre[d] for d in m_donors])
-                R_pre, t_pre = get_rigid_transform(A_pts_pre, B_pts)
+                R_pre, t_pre = get_weighted_rigid_transform(A_pts_pre, B_pts, weights_pre)
                 pos_pre = np.dot(R_pre, pose_pre[m_target].T) + t_pre.T
 
-                A_pts_post = np.array([pose_post[d] for d in m_donors])
-                R_post, t_post = get_rigid_transform(A_pts_post, B_pts)
+                R_post, t_post = get_weighted_rigid_transform(A_pts_post, B_pts, weights_post)
                 pos_post = np.dot(R_post, pose_post[m_target].T) + t_post.T
 
                 weight = (i - gap['start'] + 1) / (gap['end'] - gap['start'] + 2)
-                target_reconstructed = (1.0 - weight) * pos_pre + weight * pos_post
+                merged = (1.0 - weight) * pos_pre + weight * pos_post
+                recon_x.append(merged[0]);
+                recon_y.append(merged[1]);
+                recon_z.append(merged[2])
 
-                recon_x.append(target_reconstructed[0])
-                recon_y.append(target_reconstructed[1])
-                recon_z.append(target_reconstructed[2])
+            recon_x = smooth_gap_segment(recon_x)
+            recon_y = smooth_gap_segment(recon_y)
+            recon_z = smooth_gap_segment(recon_z)
 
-            # 2. Apply the filter ONLY to this filled segment
-            recon_x = smooth_gap_segment(recon_x, frame_rate, cutoff=15)
-            recon_y = smooth_gap_segment(recon_y, frame_rate, cutoff=15)
-            recon_z = smooth_gap_segment(recon_z, frame_rate, cutoff=15)
-
-            # 3. Write the smoothed fill back into the track data
             for idx, i in enumerate(range(gap['start'], gap['end'] + 1)):
-                track_data[m_target]['x'][i] = float(recon_x[idx])
-                track_data[m_target]['y'][i] = float(recon_y[idx])
-                track_data[m_target]['z'][i] = float(recon_z[idx])
+                track_data[m_target]['x'][i] = recon_x[idx]
+                track_data[m_target]['y'][i] = recon_y[idx]
+                track_data[m_target]['z'][i] = recon_z[idx]
                 track_data[m_target]['e'][i] = True
 
             progress_made = True
-            break# Break and re-evaluate gaps since data changed
+        else:
+            unfilled_gaps.append(gap)
 
-    # 2. If no Rigid Body fill is possible, find the smallest gap to Pattern Fill
-    # This might unlock a Rigid Body fill in the next iteration.
+    all_gaps = unfilled_gaps
+    if progress_made: continue
+
+    # 2. Dual-Anchor Pattern Fill
+    unfilled_gaps = []
     for gap in all_gaps:
+        if not progress_made:
+            m_target = gap['marker']
+            pattern_success = False
+            for donor in donor_preferences[m_target]:
+                if apply_dual_pattern_fill(track_data[m_target], track_data[donor], gap):
+                    pattern_success = True
+                    break
 
-        m_target = gap['marker']
-        m_donors = [m for m in markers if m != m_target]
+            if pattern_success:
+                progress_made = True
+                continue
+        unfilled_gaps.append(gap)
 
-        pattern_success = False
-        for donor in m_donors:
-            if apply_pattern_fill(track_data[m_target], track_data[donor], gap):
-                pattern_success = True
-                break
-
-        if pattern_success:
-            progress_made = True
-            break
-
+    all_gaps = unfilled_gaps
     if not progress_made:
-        print("Warning: Stopped iterating. Remaining gaps cannot be filled with current methods.")
+        vicon.DisplayMessage(f"Pipeline stopped: {len(all_gaps)} thorax gaps could not be dynamically filled.")
         break
 
 # ---------------------------------------------------------
-# STEP D: Write Data Back to Nexus
+# STEP B: Spline Fill Cleanup
 # ---------------------------------------------------------
-print("Writing data back to Nexus...")
-for m in markers:
-    # Cast NumPy types back to standard Python floats and booleans
-    vicon.SetTrajectory(subject, m,
-                        track_data[m]['x'],
-                        track_data[m]['y'],
-                        track_data[m]['z'],
-                        track_data[m]['e'])
+vicon.DisplayMessage("Running final Spline smoothing pass...")
+for m in primary_markers:
+    # Get remaining small gaps dynamically
+    for gap in get_gaps(track_data[m]['e']):
+        if gap['length'] <= 5:
+            apply_spline_fill(track_data[m], gap)
 
-print("Pipeline complete.")
+# ---------------------------------------------------------
+# STEP C: Write Primary Markers Back to Nexus
+# ---------------------------------------------------------
+for m in primary_markers:
+    vicon.SetTrajectory(subject, m,
+                        [float(v) for v in track_data[m]['x']],
+                        [float(v) for v in track_data[m]['y']],
+                        [float(v) for v in track_data[m]['z']],
+                        [bool(v) for v in track_data[m]['e']])
+
+vicon.DisplayMessage("Thorax cleaning pipeline complete.")
