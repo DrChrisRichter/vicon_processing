@@ -153,6 +153,65 @@ def get_weighted_rigid_transform(A, B, weights):
 
     return R, centroid_B.T - np.dot(R, centroid_A.T)
 
+def rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post, max_displacement):
+    """
+    Performs a distance-weighted Kabsch rigid body reconstruction for a specified gap.
+    Blends pre- and post-gap transformations and applies edge-padded Savitzky-Golay smoothing.
+
+    :return: (bool success, str message)
+    """
+    start_frame, end_frame = gap['start'], gap['end']
+
+    # Extract static/reference points for pre- and post-gap anchor poses
+    A_pts_pre = np.array([pose_pre[d] for d in valid_donors])
+    weights_pre = 1.0 / (np.linalg.norm(A_pts_pre - pose_pre[m_target], axis=1) + 1e-6)
+
+    A_pts_post = np.array([pose_post[d] for d in valid_donors])
+    weights_post = 1.0 / (np.linalg.norm(A_pts_post - pose_post[m_target], axis=1) + 1e-6)
+
+    recon_x, recon_y, recon_z = [], [], []
+
+    for i in range(start_frame, end_frame + 1):
+        # Current positions of donors at frame i
+        B_pts = np.array([[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in valid_donors])
+
+        # Compute Kabsch rigid transformations
+        R_pre, t_pre = get_weighted_rigid_transform(A_pts_pre, B_pts, weights_pre)
+        pos_pre = np.dot(R_pre, pose_pre[m_target].T) + t_pre.T
+
+        R_post, t_post = get_weighted_rigid_transform(A_pts_post, B_pts, weights_post)
+        pos_post = np.dot(R_post, pose_post[m_target].T) + t_post.T
+
+        # Temporal weight blending across gap
+        weight = (i - start_frame + 1) / (end_frame - start_frame + 2)
+        merged = (1.0 - weight) * pos_pre + weight * pos_post
+
+        # Biomechanical Spike Rejection Check at boundary transition
+        if i == start_frame and i > 0 and track_data[m_target]['e'][i - 1]:
+            prev_pos = np.array([track_data[m_target]['x'][i - 1],
+                                 track_data[m_target]['y'][i - 1],
+                                 track_data[m_target]['z'][i - 1]])
+            if np.linalg.norm(merged - prev_pos) > max_displacement:
+                return False, "Spike detected exceeding max displacement threshold."
+
+        recon_x.append(merged[0])
+        recon_y.append(merged[1])
+        recon_z.append(merged[2])
+
+    # Apply boundary-padded Savitzky-Golay smoothing filter
+    recon_x = smooth_gap_segment(recon_x)
+    recon_y = smooth_gap_segment(recon_y)
+    recon_z = smooth_gap_segment(recon_z)
+
+    # Write back to local trajectory cache
+    for idx, i in enumerate(range(start_frame, end_frame + 1)):
+        track_data[m_target]['x'][i] = recon_x[idx]
+        track_data[m_target]['y'][i] = recon_y[idx]
+        track_data[m_target]['z'][i] = recon_z[idx]
+        track_data[m_target]['e'][i] = True
+
+    return True, "Success"
+
 
 def apply_dual_pattern_fill(target_data, donor_data, gap):
     start, end = gap['start'], gap['end']
@@ -366,56 +425,13 @@ def clean_cluster(vicon, subject, cluster_name, config):
                     m: np.array([track_data[m]['x'][f_post], track_data[m]['y'][f_post], track_data[m]['z'][f_post]])
                     for m in valid_donors + [m_target]}
 
-                A_pts_pre = np.array([pose_pre[d] for d in valid_donors])
-                weights_pre = 1.0 / (np.linalg.norm(A_pts_pre - pose_pre[m_target], axis=1) + 1e-6)
-
-                A_pts_post = np.array([pose_post[d] for d in valid_donors])
-                weights_post = 1.0 / (np.linalg.norm(A_pts_post - pose_post[m_target], axis=1) + 1e-6)
-
-                recon_x, recon_y, recon_z = [], [], []
-                spike_detected = False
-
-                for i in range(gap['start'], gap['end'] + 1):
-                    B_pts = np.array(
-                        [[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in valid_donors])
-
-                    R_pre, t_pre = get_weighted_rigid_transform(A_pts_pre, B_pts, weights_pre)
-                    pos_pre = np.dot(R_pre, pose_pre[m_target].T) + t_pre.T
-
-                    R_post, t_post = get_weighted_rigid_transform(A_pts_post, B_pts, weights_post)
-                    pos_post = np.dot(R_post, pose_post[m_target].T) + t_post.T
-
-                    weight = (i - gap['start'] + 1) / (gap['end'] - gap['start'] + 2)
-                    merged = (1.0 - weight) * pos_pre + weight * pos_post
-
-                    # Biomechanical Spike Rejection Check
-                    if i == gap['start'] and i > 0 and track_data[m_target]['e'][i - 1]:
-                        prev_pos = np.array([track_data[m_target]['x'][i - 1],
-                                             track_data[m_target]['y'][i - 1],
-                                             track_data[m_target]['z'][i - 1]])
-                        if np.linalg.norm(merged - prev_pos) > max_displacement:
-                            spike_detected = True
-                            break
-
-                    recon_x.append(merged[0])
-                    recon_y.append(merged[1])
-                    recon_z.append(merged[2])
-
-                if spike_detected:
+                # Run unified rigid fill helper
+                success, _ = rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post,
+                                            max_displacement)
+                if success:
+                    progress_made = True
+                else:
                     unfilled_gaps.append(gap)
-                    continue
-
-                recon_x = smooth_gap_segment(recon_x)
-                recon_y = smooth_gap_segment(recon_y)
-                recon_z = smooth_gap_segment(recon_z)
-
-                for idx, i in enumerate(range(gap['start'], gap['end'] + 1)):
-                    track_data[m_target]['x'][i] = recon_x[idx]
-                    track_data[m_target]['y'][i] = recon_y[idx]
-                    track_data[m_target]['z'][i] = recon_z[idx]
-                    track_data[m_target]['e'][i] = True
-
-                progress_made = True
             else:
                 unfilled_gaps.append(gap)
 
@@ -457,7 +473,14 @@ def clean_cluster(vicon, subject, cluster_name, config):
         for m in primary_markers:
             if not any(track_data[m]['e']) and m in static_ref_poses:
                 print(f"  > Reconstructing completely missing marker {m} from static reference...")
-                # Apply static-derived baseline coordinates as fallback reference
+                full_gap = {'start': 0, 'end': total_frames - 1, 'length': total_frames}
+                valid_donors = [d for d in primary_markers + emergency_markers if
+                                d != m and d in static_ref_poses and any(track_data[d]['e'])]
+
+                if len(valid_donors) >= 3:
+                    # Use static calibration positions as reference pre/post poses
+                    pose_static = {d: static_ref_poses[d] for d in valid_donors + [m]}
+                    rigid_fill_gap(track_data, m, full_gap, valid_donors, pose_static, pose_static, max_displacement)
     except Exception as err:
         print(f"  > Note: Static reference lookup skipped ({err}).")
 
