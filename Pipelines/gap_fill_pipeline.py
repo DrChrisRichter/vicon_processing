@@ -214,10 +214,148 @@ def apply_spline_fill(data, gap, pad=5):
         data['e'][i] = True
     return True
 
+# ---------------------------------------------------------
+# 4. Static Reference Reconstructor
+# ---------------------------------------------------------
+
+def estimate_missing_marker(api, subject_name, file_path, file_name):
+    """
+    Extracts reference marker geometry from a static calibration C3D file and uses
+    it to reconstruct markers that were removed or missing in subsequent dynamic trials.
+    """
+    # 1. Read the dynamic C3D file
+    dynamic_path = os.path.join(file_path, file_name)
+    data = read_c3d(path=dynamic_path)
+
+    # Identify markers defined in the model but completely missing from this dynamic trial
+    missing_markers = [
+        x for x in data.biomechanical_mdl.get_mdl_marker()
+        if x not in data.marker_data.keys() or len(data.marker_data[x]) == 0
+    ]
+
+    if len(missing_markers) == 0:
+        print("\tNo missing removed-markers detected.")
+        return
+
+    # 2. Locate and read the static reference C3D file
+    static_files = [x for x in os.listdir(file_path) if "static" in x.lower() and x.lower().endswith(".c3d")]
+    assert len(static_files) != 0, "No Static Reference Found"
+    assert len(static_files) == 1, f"Multiple Static References Found: {','.join(static_files)}"
+
+    static_file = static_files[0]
+    static_ref = read_c3d(path=os.path.join(file_path, static_file))
+
+    if static_ref.biomechanical_mdl.name != data.biomechanical_mdl.name:
+        raise LookupError('Static and Dynamic files do not share the same marker set model')
+
+    print(f"\tExtracting static reference pose from {static_file}...")
+
+    # Extract clean baseline positions from the static calibration trial
+    static_pose = {}
+    for m in static_ref.marker_data.keys():
+        valid_frames = [pos for pos in static_ref.marker_data[m] if not np.all(pos == 0)]
+        if valid_frames:
+            # Use mean position across valid static frames as the baseline geometry
+            static_pose[m] = np.mean(valid_frames, axis=0)
+
+    # Verify total frame range of active dynamic trial
+    total_frames = api.GetTrialRange()[1] - api.GetTrialRange()[0] + 1
+
+    # 3. Segment fill removed markers into dynamic trial
+    for target_marker in missing_markers:
+        if target_marker not in static_pose:
+            print(f"\t  > Marker {target_marker} missing in static reference. Cannot reconstruct.")
+            continue
+
+        # Find segment configuration containing the removed target marker
+        segment_cfg = None
+        target_segment = None
+        for seg_name, cfg in SEGMENTS.items():
+            if target_marker in cfg['primary'] or target_marker in cfg['emergency']:
+                target_segment = seg_name
+                segment_cfg = cfg
+                break
+
+        if segment_cfg is None:
+            print(f"\t  > Marker {target_marker} not assigned to any segment in SEGMENTS dict. Skipping.")
+            continue
+
+        # Find donor markers present in both static ref and dynamic trial
+        candidate_donors = segment_cfg['primary'] + segment_cfg['emergency']
+        donors = [d for d in candidate_donors if d != target_marker and d in static_pose]
+
+        # Load donor trajectory streams from dynamic trial
+        dynamic_donors = {}
+        for d in donors:
+            try:
+                x, y, z, e = api.GetTrajectory(subject_name, d)
+                dynamic_donors[d] = {'x': list(x), 'y': list(y), 'z': list(z), 'e': list(e)}
+            except Exception:
+                continue
+
+        # Calculate static reference distances and inverse weights relative to target marker
+        A_pts_static = np.array([static_pose[d] for d in donors if d in dynamic_donors])
+        target_static_pos = static_pose[target_marker]
+
+        if len(A_pts_static) < 3:
+            print(f"\t  > Insufficient active donors in dynamic trial to reconstruct {target_marker} (need >= 3).")
+            continue
+
+        valid_donors = [d for d in donors if d in dynamic_donors]
+        distances = np.linalg.norm(A_pts_static - target_static_pos, axis=1)
+        weights = 1.0 / (distances + 1e-6)
+
+        # Reconstruct trajectory frame by frame
+        recon_x, recon_y, recon_z, recon_e = [], [], [], []
+
+        for f in range(total_frames):
+            active_donors = [d for d in valid_donors if dynamic_donors[d]['e'][f]]
+
+            if len(active_donors) >= 3:
+                active_idx = [valid_donors.index(d) for d in active_donors]
+                A_pts = A_pts_static[active_idx]
+                w_pts = weights[active_idx]
+
+                B_pts = np.array([[dynamic_donors[d]['x'][f],
+                                   dynamic_donors[d]['y'][f],
+                                   dynamic_donors[d]['z'][f]] for d in active_donors])
+
+                # Calculate distance-weighted Kabsch transform using static baseline reference
+                R, t = get_weighted_rigid_transform(A_pts, B_pts, w_pts)
+                pos_reconstructed = np.dot(R, target_static_pos.T) + t.T
+
+                recon_x.append(float(pos_reconstructed[0]))
+                recon_y.append(float(pos_reconstructed[1]))
+                recon_z.append(float(pos_reconstructed[2]))
+                recon_e.append(True)
+            else:
+                recon_x.append(0.0)
+                recon_y.append(0.0)
+                recon_z.append(0.0)
+                recon_e.append(False)
+
+        # Smooth output trajectory segment
+        recon_x = smooth_gap_segment(recon_x)
+        recon_y = smooth_gap_segment(recon_y)
+        recon_z = smooth_gap_segment(recon_z)
+
+        # Create slot and push trajectory back to Nexus
+        try:
+            api.CreateModeledMarker(subject_name, target_marker)
+        except Exception:
+            pass
+
+        vicon_format = [recon_x, recon_y, recon_z]
+        api.SetModelOutput(subject_name, target_marker, vicon_format, recon_e)
+        print(f"  > Reconstructed removed marker '{target_marker}' using static geometry ({target_segment} segment).")
+
+    print("\tStatic reference segment fill complete.")
+
 
 # ---------------------------------------------------------
 # 3. Core Processing Engine
 # ---------------------------------------------------------
+
 def clean_cluster(vicon, subject, cluster_name, config):
     print(f"--- Processing Cluster: {cluster_name} ---")
     primary_markers = config['primary']
