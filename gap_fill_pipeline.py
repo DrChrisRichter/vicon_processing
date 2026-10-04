@@ -31,49 +31,49 @@ SEGMENTS = {
         },
         'max_displacement_mm': 35.0
     },
-    'Left_Thigh': {
-        'primary': ['LTHIA', 'LKNE', 'MKNE'],
-        'emergency': ['LASI', 'LPSI'],
-        'hierarchy': {
-            'LTHIA': ['LKNE', 'MKNE', 'LASI'],
-            'LKNE':  ['LTHIA', 'MKNE', 'LASI'],
-            'MKNE':  ['LTHIA', 'LKNE', 'LASI']
-        },
-        'max_displacement_mm': 40.0 # Thighs undergo higher linear acceleration
-    },
-    'Right_Thigh': {
-        'primary': ['RTHIA', 'RKNE', 'RMKN'],
-        'emergency': ['RASI', 'RPSI'],
-        'hierarchy': {
-            'RTHIA': ['RKNE', 'RMKN', 'RASI'],
-            'RKNE':  ['RTHIA', 'RMKN', 'RASI'],
-            'RMKN':  ['RTHIA', 'RKNE', 'RASI']
-        },
-        'max_displacement_mm': 40.0
-    },
     'Left_Shank': {
-        'primary': ['LTIBA', 'LANK', 'LEMA'], # LEMA = Lateral Epicondyle / Knee joint center proxy
-        'emergency': ['LKNE', 'MKNE'],
+        'primary': ['LTIBA', 'LANK', 'LTIB'], # LEMA = Lateral Epicondyle / Knee joint center proxy
+        'emergency': ['LKNE'],
         'hierarchy': {
-            'LTIBA': ['LANK', 'LEMA', 'LKNE'],
-            'LANK':  ['LTIBA', 'LEMA', 'LKNE'],
-            'LEMA':  ['LTIBA', 'LANK', 'LKNE']
+            'LTIBA': ['LANK', 'LTIB', 'LKNE'],
+            'LANK':  ['LTIBA', 'LTIB', 'LKNE'],
+            'LTIB':  ['LTIBA', 'LANK', 'LKNE']
         },
         'max_displacement_mm': 45.0
     },
     'Right_Shank': {
-        'primary': ['RTIBA', 'RANK', 'REMA'],
-        'emergency': ['RKNE', 'RMKN'],
+        'primary': ['RTIBA', 'RANK', 'RTIB'],
+        'emergency': ['RKNE'],
         'hierarchy': {
-            'RTIBA': ['RANK', 'REMA', 'RKNE'],
-            'RANK':  ['RTIBA', 'REMA', 'RKNE'],
-            'REMA':  ['RTIBA', 'RANK', 'RKNE']
+            'RTIBA': ['RANK', 'RTIB', 'RKNE'],
+            'RANK':  ['RTIBA', 'RTIB', 'RKNE'],
+            'RTIB':  ['RTIBA', 'RANK', 'RKNE']
         },
         'max_displacement_mm': 45.0
     },
+    'Left_Thigh': {
+        'primary': ['LTHIA', 'LKNE', 'LTHI'],
+        'emergency': [],
+        'hierarchy': {
+            'LTHIA': ['LKNE', 'LTHI'],
+            'LKNE':  ['LTHIA', 'LTHI'],
+            'LTHI':  ['LTHIA', 'LKNE']
+        },
+        'max_displacement_mm': 40.0 # Thighs undergo higher linear acceleration
+    },
+    'Right_Thigh': {
+        'primary': ['RTHIA', 'RKNE', 'RTHI'],
+        'emergency': [],
+        'hierarchy': {
+            'RTHIA': ['RKNE', 'RTHI'],
+            'RKNE':  ['RTHIA', 'RTHI'],
+            'RTHI':  ['RTHIA', 'RKNE']
+        },
+        'max_displacement_mm': 40.0
+    },
     'Left_Foot': {
         'primary': ['LHEE', 'LTOE', 'LANK'],
-        'emergency': ['LMETA'], # 5th Metatarsal if available
+        'emergency': [],
         'hierarchy': {
             'LHEE': ['LTOE', 'LANK'],
             'LTOE': ['LHEE', 'LANK'],
@@ -83,7 +83,7 @@ SEGMENTS = {
     },
     'Right_Foot': {
         'primary': ['RHEE', 'RTOE', 'RANK'],
-        'emergency': ['RMETA'],
+        'emergency': [],
         'hierarchy': {
             'RHEE': ['RTOE', 'RANK'],
             'RTOE': ['RHEE', 'RANK'],

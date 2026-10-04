@@ -64,7 +64,7 @@ def crop_trial(min_required_markers):
         print(
             f"Auto-Crop Range Detected: Frame {valid_start_frame} to {valid_end_frame} (Total: {valid_end_frame - valid_start_frame + 1} frames)")
         try:
-            vicon.SetTrialRange(valid_start_frame, valid_end_frame)
+            vicon.SetTrialRegionOfInterest(valid_start_frame, valid_end_frame)
             print("Trial successfully cropped.")
         except Exception as e:
             print(f"Error applying trial range in Nexus: {e}")
@@ -78,4 +78,4 @@ def crop_trial(min_required_markers):
 
 if __name__ == "__main__":
     # Supply your minimum active marker count as input here:
-    crop_trial(10)
+    crop_trial(28)
