@@ -10,6 +10,7 @@ from viconnexusapi import ViconNexus
 # ---------------------------------------------------------
 # 1. Configuration (Easily add new segments here)
 # ---------------------------------------------------------
+
 SEGMENTS = {
     'Thorax': {
         'primary': ['C7', 'T10', 'CLAV', 'STRN'],
@@ -99,10 +100,10 @@ SEGMENTS = {
     }
 }
 
-
 # ---------------------------------------------------------
 # 2. Math & Logic Helpers
 # ---------------------------------------------------------
+
 def get_gaps(exists_array):
     gaps, start, in_gap = [], 0, False
     for i, val in enumerate(exists_array):
@@ -114,7 +115,6 @@ def get_gaps(exists_array):
     if in_gap:
         gaps.append({'start': start, 'end': len(exists_array) - 1, 'length': len(exists_array) - start})
     return gaps
-
 
 def smooth_gap_segment(segment):
     length = len(segment)
@@ -130,7 +130,6 @@ def smooth_gap_segment(segment):
     smoothed = savgol_filter(padded, window_length, polyorder, mode='interp')
 
     return smoothed[pad_size: -pad_size]
-
 
 def get_weighted_rigid_transform(A, B, weights):
     weights = np.array(weights)
@@ -155,14 +154,12 @@ def get_weighted_rigid_transform(A, B, weights):
 
 def rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post, max_displacement):
     """
-    Performs a distance-weighted Kabsch rigid body reconstruction for a specified gap.
+    Performs distance-weighted Kabsch rigid body reconstruction for a specified gap.
     Blends pre- and post-gap transformations and applies edge-padded Savitzky-Golay smoothing.
-
-    :return: (bool success, str message)
     """
     start_frame, end_frame = gap['start'], gap['end']
+    gap_length = end_frame - start_frame + 1
 
-    # Extract static/reference points for pre- and post-gap anchor poses
     A_pts_pre = np.array([pose_pre[d] for d in valid_donors])
     weights_pre = 1.0 / (np.linalg.norm(A_pts_pre - pose_pre[m_target], axis=1) + 1e-6)
 
@@ -172,38 +169,39 @@ def rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post,
     recon_x, recon_y, recon_z = [], [], []
 
     for i in range(start_frame, end_frame + 1):
-        # Current positions of donors at frame i
         B_pts = np.array([[track_data[d]['x'][i], track_data[d]['y'][i], track_data[d]['z'][i]] for d in valid_donors])
 
-        # Compute Kabsch rigid transformations
         R_pre, t_pre = get_weighted_rigid_transform(A_pts_pre, B_pts, weights_pre)
         pos_pre = np.dot(R_pre, pose_pre[m_target].T) + t_pre.T
 
         R_post, t_post = get_weighted_rigid_transform(A_pts_post, B_pts, weights_post)
         pos_post = np.dot(R_post, pose_post[m_target].T) + t_post.T
 
-        # Temporal weight blending across gap
-        weight = (i - start_frame + 1) / (end_frame - start_frame + 2)
+        # Blend pre and post poses across gap
+        weight = (i - start_frame + 1) / (gap_length + 1)
         merged = (1.0 - weight) * pos_pre + weight * pos_post
 
-        # Biomechanical Spike Rejection Check at boundary transition
+        # Biomechanical Spike Rejection
         if i == start_frame and i > 0 and track_data[m_target]['e'][i - 1]:
             prev_pos = np.array([track_data[m_target]['x'][i - 1],
                                  track_data[m_target]['y'][i - 1],
                                  track_data[m_target]['z'][i - 1]])
             if np.linalg.norm(merged - prev_pos) > max_displacement:
-                return False, "Spike detected exceeding max displacement threshold."
+                return False, "Spike detected exceeding displacement threshold."
 
-        recon_x.append(merged[0])
-        recon_y.append(merged[1])
-        recon_z.append(merged[2])
+        recon_x.append(float(merged[0]))
+        recon_y.append(float(merged[1]))
+        recon_z.append(float(merged[2]))
 
-    # Apply boundary-padded Savitzky-Golay smoothing filter
+    # Apply Savitzky-Golay smoothing
     recon_x = smooth_gap_segment(recon_x)
     recon_y = smooth_gap_segment(recon_y)
     recon_z = smooth_gap_segment(recon_z)
 
-    # Write back to local trajectory cache
+    # Verify output dimensions match gap length before writing
+    assert len(recon_x) == gap_length, f"Length mismatch: {len(recon_x)} vs {gap_length}"
+
+    # Write smoothed positions back to gap range
     for idx, i in enumerate(range(start_frame, end_frame + 1)):
         track_data[m_target]['x'][i] = recon_x[idx]
         track_data[m_target]['y'][i] = recon_y[idx]
@@ -211,7 +209,6 @@ def rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post,
         track_data[m_target]['e'][i] = True
 
     return True, "Success"
-
 
 def apply_dual_pattern_fill(target_data, donor_data, gap):
     start, end = gap['start'], gap['end']
@@ -262,7 +259,6 @@ def apply_dual_pattern_fill(target_data, donor_data, gap):
         target_data['x'][i], target_data['y'][i], target_data['z'][i] = recon_x[idx], recon_y[idx], recon_z[idx]
         target_data['e'][i] = True
     return True
-
 
 def apply_spline_fill(data, gap, pad=5):
     start, end = gap['start'], gap['end']
@@ -352,7 +348,6 @@ def extract_static_marker_reference(vicon_api, file_path=None):
 
     print(f"Extracted {len(static_reference)} reference markers from static trial.")
     return static_reference
-
 
 # ---------------------------------------------------------
 # 3. Core Processing Engine
@@ -491,7 +486,6 @@ def clean_cluster(vicon, subject, cluster_name, config):
                             [float(v) for v in track_data[m]['y']],
                             [float(v) for v in track_data[m]['z']],
                             [bool(v) for v in track_data[m]['e']])
-
 
 # ---------------------------------------------------------
 # 4. Main Execution
