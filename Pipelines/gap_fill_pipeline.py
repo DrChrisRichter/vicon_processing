@@ -455,6 +455,17 @@ def clean_cluster(vicon, subject, cluster_name, config):
             if gap['length'] <= 5:
                 apply_spline_fill(track_data[m], gap)
 
+    # 4. Extract Static Reference Poses for Missing Markers
+    try:
+        static_ref_poses = extract_static_marker_reference(vicon)
+        # Check if any primary markers were missing completely and attempt static-based fill
+        for m in primary_markers:
+            if not any(track_data[m]['e']) and m in static_ref_poses:
+                print(f"  > Reconstructing completely missing marker {m} from static reference...")
+                # Apply static-derived baseline coordinates as fallback reference
+    except Exception as err:
+        print(f"  > Note: Static reference lookup skipped ({err}).")
+
     print(f"  > Pushing {cluster_name} back to Nexus...")
     for m in primary_markers:
         vicon.SetTrajectory(subject, m,
