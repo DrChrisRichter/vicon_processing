@@ -61,6 +61,40 @@ def transform_fp_to_mocap_frame(vicon, fp_frame):
 # ---------------------------------------------------------
 # Exercise Event Analyzers
 # ---------------------------------------------------------
+def register_squat_events(vicon, subject, threshold_N=20.0):
+    """Detects and registers Squat events."""
+    print("--- Registering DLCMJ Events ---")
+
+    toeoff_fp = flight_idx[0]
+    impact_fp = flight_idx[-1] + 1
+
+    # 2. Movement Start (Unweighting > 5% BW)
+    pre_jump = fz_signal[:toeoff_fp]
+    unweighting = np.where(np.abs(pre_jump - bw_N) > (bw_N * 0.05))[0]
+    start_fp = unweighting[0] if len(unweighting) > 0 else max(0, toeoff_fp - 100)
+
+    # 3. End of Landing (Stabilization post-impact)
+    post_impact = fz_signal[impact_fp:]
+    end_landing_fp = impact_fp + len(post_impact) - 1
+    if len(post_impact) > 50:
+        peak_impact = np.argmax(post_impact)
+        stabilized = np.where(np.abs(post_impact[peak_impact:] - bw_N) < (bw_N * 0.10))[0]
+        if len(stabilized) > 0:
+            end_landing_fp = impact_fp + peak_impact + stabilized[0]
+
+    # Convert to Mocap frames
+    mocap_events = {
+        'Start': transform_fp_to_mocap_frame(vicon, start_fp),
+        'Foot Off': transform_fp_to_mocap_frame(vicon, toeoff_fp),
+        'Foot Strike': transform_fp_to_mocap_frame(vicon, impact_fp),
+        'End Landing': transform_fp_to_mocap_frame(vicon, end_landing_fp)
+    }
+
+    # Write events to Nexus
+    _write_events_to_nexus(vicon, subject, mocap_events)
+    return True
+
+
 def register_dlcmj_events(vicon, subject, threshold_N=20.0):
     """Detects and registers Double-Leg Countermovement Jump (DLCMJ) events."""
     print("--- Registering DLCMJ Events ---")
@@ -165,5 +199,7 @@ if __name__ == "__main__":
     if subjects:
         subject = subjects[0]
         # Choose the exercise function to run on the active trial
+        if 'SQUAT' in file_name.upper():
+            register_squat_events(vicon, subject)
         if 'CMJ' in file_name.upper():
             register_dlcmj_events(vicon, subject)

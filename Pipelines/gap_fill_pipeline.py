@@ -48,7 +48,7 @@ SEGMENTS = {
         'max_displacement_mm': 45.0
     },
     'Right_Shank': {
-        'primary': ['RTIBA', 'RANK', 'RTIB'],
+        'primary': ['RTIBA', 'RANK', 'RTIB', 'RMM'],
         'emergency': ['RKNE'],
         'hierarchy': {
             'RTIBA': ['RANK', 'RTIB', 'RKNE'],
@@ -194,9 +194,9 @@ def rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post,
         recon_z.append(float(merged[2]))
 
     # Apply Savitzky-Golay smoothing
-    recon_x = smooth_gap_segment(recon_x)
-    recon_y = smooth_gap_segment(recon_y)
-    recon_z = smooth_gap_segment(recon_z)
+    #recon_x = smooth_gap_segment(recon_x)
+    #recon_y = smooth_gap_segment(recon_y)
+    #recon_z = smooth_gap_segment(recon_z)
 
     # Verify output dimensions match gap length before writing
     assert len(recon_x) == gap_length, f"Length mismatch: {len(recon_x)} vs {gap_length}"
@@ -243,12 +243,12 @@ def apply_dual_pattern_fill(target_data, donor_data, gap):
             recon_y.append((1.0 - w) * y_pre + w * y_post)
             recon_z.append((1.0 - w) * z_pre + w * z_post)
         elif has_pre:
-            recon_x.append(x_pre);
-            recon_y.append(y_pre);
+            recon_x.append(x_pre)
+            recon_y.append(y_pre)
             recon_z.append(z_pre)
         else:
-            recon_x.append(x_post);
-            recon_y.append(y_post);
+            recon_x.append(x_post)
+            recon_y.append(y_post)
             recon_z.append(z_post)
 
     recon_x = smooth_gap_segment(recon_x)
@@ -354,6 +354,7 @@ def extract_static_marker_reference(vicon_api, file_path=None):
 # ---------------------------------------------------------
 
 def clean_cluster(vicon, subject, cluster_name, config):
+
     print(f"--- Processing Cluster: {cluster_name} ---")
     primary_markers = config['primary']
     emergency_markers = config['emergency']
@@ -475,7 +476,9 @@ def clean_cluster(vicon, subject, cluster_name, config):
                 if len(valid_donors) >= 3:
                     # Use static calibration positions as reference pre/post poses
                     pose_static = {d: static_ref_poses[d] for d in valid_donors + [m]}
-                    rigid_fill_gap(track_data, m, full_gap, valid_donors, pose_static, pose_static, max_displacement)
+                    rigid_fill_gap(
+                        track_data, m, full_gap, valid_donors, pose_static, pose_static, max_displacement
+                    )
     except Exception as err:
         print(f"  > Note: Static reference lookup skipped ({err}).")
 
