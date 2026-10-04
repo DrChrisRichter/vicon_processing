@@ -1,4 +1,8 @@
+
 import numpy as np
+import ezc3d
+import os
+
 from scipy.interpolate import CubicSpline
 from scipy.signal import savgol_filter
 from viconnexusapi import ViconNexus
@@ -220,10 +224,6 @@ def apply_spline_fill(data, gap, pad=5):
 # 4. Static Reference Reconstructor
 # ---------------------------------------------------------
 
-import numpy as np
-import ezc3d
-
-
 def read_c3d(path):
     """
     Reads a C3D file using ezc3d and returns a structured object
@@ -266,18 +266,13 @@ def extract_static_marker_reference(vicon_api, file_path=None):
         file_path = os.path.dirname(full_trial_path)
 
     # 2. Locate the static reference C3D file in the session directory
-    static_files = [
+    static_files = sorted([
         f for f in os.listdir(file_path)
-        if "static" in f.lower() and f.lower().endswith(".c3d")
-    ]
+        if "static" in f.lower() and f.lower().endswith(".c3d") and not f.startswith("._")
+    ])[0]
 
-    if len(static_files) == 0:
-        raise FileNotFoundError(f"No Static Reference C3D file found in directory: {file_path}")
-    if len(static_files) > 1:
-        raise ValueError(f"Multiple static reference files found: {', '.join(static_files)}")
-
-    static_c3d_path = os.path.join(file_path, static_files[0])
-    print(f"Extracting static reference markers from: {static_files[0]}")
+    static_c3d_path = os.path.join(file_path, static_files)
+    print(f"Extracting static reference markers from: {static_files}")
 
     # 3. Read static C3D file
     static_data = read_c3d(path=static_c3d_path)
@@ -312,6 +307,7 @@ def clean_cluster(vicon, subject, cluster_name, config):
     max_displacement = config['max_displacement_mm']
 
     all_markers = primary_markers + emergency_markers
+    static_ref_poses = extract_static_marker_reference(vicon)
 
     # Load trajectory data for this cluster
     track_data = {}
@@ -401,8 +397,8 @@ def clean_cluster(vicon, subject, cluster_name, config):
                             spike_detected = True
                             break
 
-                    recon_x.append(merged[0]);
-                    recon_y.append(merged[1]);
+                    recon_x.append(merged[0])
+                    recon_y.append(merged[1])
                     recon_z.append(merged[2])
 
                 if spike_detected:
@@ -457,7 +453,6 @@ def clean_cluster(vicon, subject, cluster_name, config):
 
     # 4. Extract Static Reference Poses for Missing Markers
     try:
-        static_ref_poses = extract_static_marker_reference(vicon)
         # Check if any primary markers were missing completely and attempt static-based fill
         for m in primary_markers:
             if not any(track_data[m]['e']) and m in static_ref_poses:
