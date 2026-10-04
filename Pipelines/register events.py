@@ -143,7 +143,7 @@ def register_drop_jump_events(vicon, subject, threshold_N=20.0):
 def _write_events_to_nexus(vicon, subject, mocap_events):
     """Clears previous events and creates General + Bilateral events in Nexus."""
     try:
-        vicon.ClearEvents(subject)
+        vicon.ClearAllEvents(subject)
     except Exception:
         pass
 
@@ -153,17 +153,6 @@ def _write_events_to_nexus(vicon, subject, mocap_events):
     for event_name, frame in mocap_events.items():
         if frame is not None:
             vicon.CreateAnEvent(subject, 'General', event_name, int(frame), frame_offset)
-
-    # 2. Write Bilateral Context Events (Left / Right)
-    toeoff_frame = mocap_events.get('Foot Off')
-    strike_frame = mocap_events.get('Foot Strike') or mocap_events.get('Initial Contact')
-
-    if toeoff_frame or strike_frame:
-        for side in ['Left', 'Right']:
-            if toeoff_frame is not None:
-                vicon.CreateAnEvent(subject, side, 'Foot Off', int(toeoff_frame), frame_offset)
-            if strike_frame is not None:
-                vicon.CreateAnEvent(subject, side, 'Foot Strike', int(strike_frame), frame_offset)
 
     print("Successfully written events to Nexus.")
 
