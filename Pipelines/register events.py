@@ -142,13 +142,9 @@ def register_drop_jump_events(vicon, subject, threshold_N=20.0):
 # ---------------------------------------------------------
 def _write_events_to_nexus(vicon, subject, mocap_events):
     """Clears previous events and creates General + Bilateral events in Nexus."""
-    try:
-        vicon.ClearAllEvents(subject)
-    except Exception:
-        pass
+    vicon.ClearAllEvents()
 
     frame_offset = 0.0
-
     # 1. Write General Context Events
     for event_name, frame in mocap_events.items():
         if frame is not None:
