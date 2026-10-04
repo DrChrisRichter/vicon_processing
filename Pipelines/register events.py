@@ -95,6 +95,98 @@ def register_squat_events(vicon, subject, threshold_N=20.0):
     return True
 
 
+import numpy as np
+from scipy.signal import find_peaks
+from viconnexusapi import ViconNexus
+
+
+def register_squat_events(vicon, subject, min_rep_distance_sec=1.5, min_depth_drop_mm=100.0):
+    """
+    Detects and registers multi-repetition Squat events based on Center of Mass (COM) Z-height:
+    - Squat Bottom: Minimum Z-point (peak knee/hip flexion) for each repetition.
+    - Squat Start: Frame where COM drops below 98% of standing height prior to bottom.
+    - Squat End: Frame where COM returns to 98% of standing height following bottom.
+    """
+    print("--- Registering Multi-Rep Squat Events ---")
+    frame_rate = vicon.GetFrameRate()
+
+    # 1. Extract Center of Mass Z-trajectory (or Pelvis / LASI proxy if COM output not modeled)
+    com_z = None
+    try:
+        # Attempt to pull modeled Center of Mass trajectory
+        _, _, z, e = vicon.GetModelOutput(subject, "CenterOfMass")
+        com_z = np.array(z)
+    except Exception:
+        # Fallback to Pelvis marker (LASI) if CenterOfMass is not present
+        try:
+            _, _, z, e = vicon.GetTrajectory(subject, "LASI")
+            com_z = np.array(z)
+            print("  > Using LASI marker trajectory as Center of Mass proxy.")
+        except Exception as err:
+            print(f"Error: Unable to extract COM or Pelvis Z-trajectory: {err}")
+            return False
+
+    if com_z is None or len(com_z) == 0:
+        print("Error: Empty Z-trajectory array.")
+        return False
+
+    # 2. Identify all local minima (bottom of squats)
+    # Invert signal so troughs become peaks for scipy.signal.find_peaks
+    inverted_com_z = -com_z
+    min_samples_between_reps = int(min_rep_distance_sec * frame_rate)
+
+    # Find peaks on inverted signal (minima on original COM signal)
+    bottom_frames, _ = find_peaks(
+        inverted_com_z,
+        distance=min_samples_between_reps,
+        prominence=min_depth_drop_mm  # Ensures noise/sway isn't registered as a rep
+    )
+
+    if len(bottom_frames) == 0:
+        print("Warning: No distinct squat repetitions detected.")
+        return False
+
+    print(f"  > Detected {len(bottom_frames)} squat repetition(s).")
+
+    # 3. Process each rep: Calculate 98% standing threshold start and end frames
+    mocap_events = []
+
+    for rep_idx, bottom_fp in enumerate(bottom_frames):
+        # Determine search bounds for standing baseline
+        # Bound backward search to either trial start or previous rep's bottom
+        prev_bound = bottom_frames[rep_idx - 1] if rep_idx > 0 else 0
+        next_bound = bottom_frames[rep_idx + 1] if rep_idx < len(bottom_frames) - 1 else len(com_z) - 1
+
+        # Peak standing height prior to descending into this rep
+        standing_peak_z = np.max(com_z[prev_bound: bottom_fp])
+        threshold_98_z = standing_peak_z * 0.98
+
+        # --- Squat Start ---
+        # Scan backward from bottom to find frame where COM drops below 98% standing height
+        pre_descent = com_z[prev_bound: bottom_fp]
+        below_98_idx = np.where(pre_descent >= threshold_98_z)[0]
+        start_fp = (prev_bound + below_98_idx[-1]) if len(below_98_idx) > 0 else max(prev_bound,
+                                                                                     bottom_fp - int(frame_rate))
+
+        # --- Squat End ---
+        # Scan forward from bottom to find frame where COM recovers to 98% standing height
+        post_ascent = com_z[bottom_fp: next_bound]
+        above_98_idx = np.where(post_ascent >= threshold_98_z)[0]
+        end_fp = (bottom_fp + above_98_idx[0]) if len(above_98_idx) > 0 else min(next_bound,
+                                                                                 bottom_fp + int(frame_rate))
+
+        mocap_events.append({
+            'rep': rep_idx + 1,
+            'Start': int(start_fp),
+            'Bottom': int(bottom_fp),
+            'End': int(end_fp)
+        })
+
+    # 4. Write Repetition Events into Nexus
+    _write_squat_events_to_nexus(vicon, subject, mocap_events)
+    return True
+
+
 def register_dlcmj_events(vicon, subject, threshold_N=20.0):
     """Detects and registers Double-Leg Countermovement Jump (DLCMJ) events."""
     print("--- Registering DLCMJ Events ---")
