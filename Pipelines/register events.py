@@ -8,7 +8,7 @@ from viconnexusapi import ViconNexus
 def get_subject_mass(vicon, subject):
     """Retrieves subject body mass in kg from Nexus parameters."""
     try:
-        return float(vicon.GetSubjectParam(subject, "BodyMass")[0])
+        return float(vicon.GetSubjectParam(subject, "Bodymass")[0])
     except Exception:
         return 70.0  # Default fallback mass in kg
 
@@ -172,10 +172,13 @@ def _write_events_to_nexus(vicon, subject, mocap_events):
 # Execution Entry Point
 # ---------------------------------------------------------
 if __name__ == "__main__":
+
     vicon = ViconNexus.ViconNexus()
     subjects = vicon.GetSubjectNames()
+    _, file_name = vicon.GetTrialName()
 
     if subjects:
         subject = subjects[0]
         # Choose the exercise function to run on the active trial
-        register_dlcmj_events(vicon, subject)
+        if 'CMJ' in file_name.upper():
+            register_dlcmj_events(vicon, subject)

@@ -32,12 +32,13 @@ SEGMENTS = {
         'max_displacement_mm': 35.0
     },
     'Left_Shank': {
-        'primary': ['LTIBA', 'LANK', 'LTIB'], # LEMA = Lateral Epicondyle / Knee joint center proxy
+        'primary': ['LTIBA', 'LANK', 'LTIB', 'LMM'], # LEMA = Lateral Epicondyle / Knee joint center proxy
         'emergency': ['LKNE'],
         'hierarchy': {
             'LTIBA': ['LANK', 'LTIB', 'LKNE'],
             'LANK':  ['LTIBA', 'LTIB', 'LKNE'],
-            'LTIB':  ['LTIBA', 'LANK', 'LKNE']
+            'LTIB':  ['LTIBA', 'LANK', 'LKNE'],
+            'LMM':  ['LTIBA', 'LANK', 'LKNE', 'LTIB']
         },
         'max_displacement_mm': 45.0
     },
@@ -47,7 +48,8 @@ SEGMENTS = {
         'hierarchy': {
             'RTIBA': ['RANK', 'RTIB', 'RKNE'],
             'RANK':  ['RTIBA', 'RTIB', 'RKNE'],
-            'RTIB':  ['RTIBA', 'RANK', 'RKNE']
+            'RTIB':  ['RTIBA', 'RANK', 'RKNE'],
+            'RMM':  ['RTIBA', 'RANK', 'RKNE', 'RTIB']
         },
         'max_displacement_mm': 45.0
     },
@@ -218,7 +220,7 @@ def apply_spline_fill(data, gap, pad=5):
 # 4. Static Reference Reconstructor
 # ---------------------------------------------------------
 
-def estimate_missing_marker(api, subject_name, file_path, file_name):
+def get_reference_cluster_from_file(subject_name, file_path, file_name):
     """
     Extracts reference marker geometry from a static calibration C3D file and uses
     it to reconstruct markers that were removed or missing in subsequent dynamic trials.
