@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.signal import find_peaks
 from viconnexusapi import ViconNexus
 
 
@@ -61,46 +62,7 @@ def transform_fp_to_mocap_frame(vicon, fp_frame):
 # ---------------------------------------------------------
 # Exercise Event Analyzers
 # ---------------------------------------------------------
-def register_squat_events(vicon, subject, threshold_N=20.0):
-    """Detects and registers Squat events."""
-    print("--- Registering DLCMJ Events ---")
-
-    toeoff_fp = flight_idx[0]
-    impact_fp = flight_idx[-1] + 1
-
-    # 2. Movement Start (Unweighting > 5% BW)
-    pre_jump = fz_signal[:toeoff_fp]
-    unweighting = np.where(np.abs(pre_jump - bw_N) > (bw_N * 0.05))[0]
-    start_fp = unweighting[0] if len(unweighting) > 0 else max(0, toeoff_fp - 100)
-
-    # 3. End of Landing (Stabilization post-impact)
-    post_impact = fz_signal[impact_fp:]
-    end_landing_fp = impact_fp + len(post_impact) - 1
-    if len(post_impact) > 50:
-        peak_impact = np.argmax(post_impact)
-        stabilized = np.where(np.abs(post_impact[peak_impact:] - bw_N) < (bw_N * 0.10))[0]
-        if len(stabilized) > 0:
-            end_landing_fp = impact_fp + peak_impact + stabilized[0]
-
-    # Convert to Mocap frames
-    mocap_events = {
-        'Start': transform_fp_to_mocap_frame(vicon, start_fp),
-        'Foot Off': transform_fp_to_mocap_frame(vicon, toeoff_fp),
-        'Foot Strike': transform_fp_to_mocap_frame(vicon, impact_fp),
-        'End Landing': transform_fp_to_mocap_frame(vicon, end_landing_fp)
-    }
-
-    # Write events to Nexus
-    _write_events_to_nexus(vicon, subject, mocap_events)
-    return True
-
-
-import numpy as np
-from scipy.signal import find_peaks
-from viconnexusapi import ViconNexus
-
-
-def register_squat_events(vicon, subject, min_rep_distance_sec=1.5, min_depth_drop_mm=100.0):
+def register_squat_events(vicon, subject, rep_duration: float=1):
     """
     Detects and registers multi-repetition Squat events based on Center of Mass (COM) Z-height:
     - Squat Bottom: Minimum Z-point (peak knee/hip flexion) for each repetition.
@@ -111,17 +73,19 @@ def register_squat_events(vicon, subject, min_rep_distance_sec=1.5, min_depth_dr
     frame_rate = vicon.GetFrameRate()
 
     # 1. Extract Center of Mass Z-trajectory (or Pelvis / LASI proxy if COM output not modeled)
-    com_z = None
     try:
         # Attempt to pull modeled Center of Mass trajectory
-        _, _, z, e = vicon.GetModelOutput(subject, "CenterOfMass")
+        _, _, z, e = vicon.GetModelOutput(subject, "CentreOfMass")
         com_z = np.array(z)
-    except Exception:
+    except ValueError:
         # Fallback to Pelvis marker (LASI) if CenterOfMass is not present
         try:
-            _, _, z, e = vicon.GetTrajectory(subject, "LASI")
-            com_z = np.array(z)
-            print("  > Using LASI marker trajectory as Center of Mass proxy.")
+            _, _, z1, e = vicon.GetTrajectory(subject, "LASI")
+            _, _, z2, e = vicon.GetTrajectory(subject, "RASI")
+            _, _, z3, e = vicon.GetTrajectory(subject, "LPSI")
+            _, _, z4, e = vicon.GetTrajectory(subject, "RPSI")
+            com_z = np.mean([z1, z2, z3, z4], axis=0)
+            print("  > Using pelvis marker trajectory as Center of Mass proxy.")
         except Exception as err:
             print(f"Error: Unable to extract COM or Pelvis Z-trajectory: {err}")
             return False
@@ -131,64 +95,36 @@ def register_squat_events(vicon, subject, min_rep_distance_sec=1.5, min_depth_dr
         return False
 
     # 2. Identify all local minima (bottom of squats)
-    # Invert signal so troughs become peaks for scipy.signal.find_peaks
-    inverted_com_z = -com_z
-    min_samples_between_reps = int(min_rep_distance_sec * frame_rate)
-
     # Find peaks on inverted signal (minima on original COM signal)
-    bottom_frames, _ = find_peaks(
-        inverted_com_z,
-        distance=min_samples_between_reps,
-        prominence=min_depth_drop_mm  # Ensures noise/sway isn't registered as a rep
-    )
-
-    if len(bottom_frames) == 0:
-        print("Warning: No distinct squat repetitions detected.")
-        return False
-
-    print(f"  > Detected {len(bottom_frames)} squat repetition(s).")
+    min_vals = np.percentile(com_z, 15)
+    max_vals = np.max(com_z) * .90
+    com_velo = np.gradient(com_z)
 
     # 3. Process each rep: Calculate 98% standing threshold start and end frames
-    mocap_events = []
-
-    for rep_idx, bottom_fp in enumerate(bottom_frames):
+    mocap_events, cf, rep = {}, 0, 1
+    while True:
         # Determine search bounds for standing baseline
         # Bound backward search to either trial start or previous rep's bottom
-        prev_bound = bottom_frames[rep_idx - 1] if rep_idx > 0 else 0
-        next_bound = bottom_frames[rep_idx + 1] if rep_idx < len(bottom_frames) - 1 else len(com_z) - 1
-
-        # Peak standing height prior to descending into this rep
-        standing_peak_z = np.max(com_z[prev_bound: bottom_fp])
-        threshold_98_z = standing_peak_z * 0.98
-
-        # --- Squat Start ---
-        # Scan backward from bottom to find frame where COM drops below 98% standing height
-        pre_descent = com_z[prev_bound: bottom_fp]
-        below_98_idx = np.where(pre_descent >= threshold_98_z)[0]
-        start_fp = (prev_bound + below_98_idx[-1]) if len(below_98_idx) > 0 else max(prev_bound,
-                                                                                     bottom_fp - int(frame_rate))
-
-        # --- Squat End ---
-        # Scan forward from bottom to find frame where COM recovers to 98% standing height
-        post_ascent = com_z[bottom_fp: next_bound]
-        above_98_idx = np.where(post_ascent >= threshold_98_z)[0]
-        end_fp = (bottom_fp + above_98_idx[0]) if len(above_98_idx) > 0 else min(next_bound,
-                                                                                 bottom_fp + int(frame_rate))
-
-        mocap_events.append({
-            'rep': rep_idx + 1,
-            'Start': int(start_fp),
-            'Bottom': int(bottom_fp),
-            'End': int(end_fp)
-        })
+        try:
+            mf = np.where(com_z[cf:] < min_vals)[0][0] + cf
+            ff = np.where(com_z[:mf] > max_vals)[0][-1]
+            ff = np.where(com_velo[:ff] > 0)[0][-1]
+            lf = np.where(com_z[mf:] > max_vals)[0][0] + mf
+            lf = np.where(com_velo[lf:] < 0)[0][0] + lf
+        except IndexError:
+            break
+        mocap_events[rep] = {'start': int(ff), 'end': int(lf)}
+        cf = lf + 1
+        rep += 1
 
     # 4. Write Repetition Events into Nexus
-    _write_squat_events_to_nexus(vicon, subject, mocap_events)
+    _write_events_to_nexus(vicon, subject, mocap_events)
     return True
 
 
 def register_dlcmj_events(vicon, subject, threshold_N=20.0):
     """Detects and registers Double-Leg Countermovement Jump (DLCMJ) events."""
+
     print("--- Registering DLCMJ Events ---")
     fz_signal = get_resultant_fz(vicon)
     mass = get_subject_mass(vicon, subject)
@@ -266,15 +202,18 @@ def register_drop_jump_events(vicon, subject, threshold_N=20.0):
 # ---------------------------------------------------------
 # Nexus Writer
 # ---------------------------------------------------------
-def _write_events_to_nexus(vicon, subject, mocap_events):
+def _write_events_to_nexus(vicon, subject, mocap_events: dict):
     """Clears previous events and creates General + Bilateral events in Nexus."""
     vicon.ClearAllEvents()
 
     frame_offset = 0.0
     # 1. Write General Context Events
-    for event_name, frame in mocap_events.items():
-        if frame is not None:
-            vicon.CreateAnEvent(subject, 'General', event_name, int(frame), frame_offset)
+    for rep, rep_data in mocap_events.items():
+        vicon.CreateAnEvent(subject, 'General', 'Start', int(rep_data.get('start')), frame_offset)
+        vicon.CreateAnEvent(subject, 'General', 'End', int(rep_data.get('end')), frame_offset)
+        if 'other' in rep_data:
+            for event_name, frame in rep_data[1:-1]:
+                vicon.CreateAnEvent(subject, 'General', 'Event', int(frame), frame_offset)
 
     print("Successfully written events to Nexus.")
 
