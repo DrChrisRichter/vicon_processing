@@ -1,3 +1,16 @@
+import sys
+import os
+import subprocess
+
+# Define the absolute path to your preferred Python environment's executable
+TARGET_PYTHON_EXE = r"C:\Users\<YourUser>\anaconda3\envs\<env_name>\python.exe"
+
+# If the current running interpreter is NOT your target environment, re-launch under the target
+if sys.executable.lower() != TARGET_PYTHON_EXE.lower() and os.path.exists(TARGET_PYTHON_EXE):
+    print(f"Switching Python environment to: {TARGET_PYTHON_EXE}")
+    result = subprocess.run([TARGET_PYTHON_EXE] + sys.argv, capture_output=False)
+    sys.exit(result.returncode)
+
 
 import numpy as np
 import ezc3d
