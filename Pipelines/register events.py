@@ -58,10 +58,10 @@ def transform_fp_to_mocap_frame(vicon, fp_frame):
     ratio = fp_rate / mocap_rate
     return int(round(fp_frame / ratio))
 
-
 # ---------------------------------------------------------
 # Exercise Event Analyzers
 # ---------------------------------------------------------
+
 def register_squat_events(vicon, subject, rep_duration: float=1):
     """
     Detects and registers multi-repetition Squat events based on Center of Mass (COM) Z-height:
@@ -70,7 +70,6 @@ def register_squat_events(vicon, subject, rep_duration: float=1):
     - Squat End: Frame where COM returns to 98% of standing height following bottom.
     """
     print("--- Registering Multi-Rep Squat Events ---")
-    frame_rate = vicon.GetFrameRate()
 
     # 1. Extract Center of Mass Z-trajectory (or Pelvis / LASI proxy if COM output not modeled)
     try:
@@ -121,7 +120,6 @@ def register_squat_events(vicon, subject, rep_duration: float=1):
     _write_events_to_nexus(vicon, subject, mocap_events)
     return True
 
-
 def register_dlcmj_events(vicon, subject, threshold_N=20.0):
     """Detects and registers Double-Leg Countermovement Jump (DLCMJ) events."""
 
@@ -154,11 +152,15 @@ def register_dlcmj_events(vicon, subject, threshold_N=20.0):
             end_landing_fp = impact_fp + peak_impact + stabilized[0]
 
     # Convert to Mocap frames
-    mocap_events = {
-        'Start': transform_fp_to_mocap_frame(vicon, start_fp),
-        'Foot Off': transform_fp_to_mocap_frame(vicon, toeoff_fp),
-        'Foot Strike': transform_fp_to_mocap_frame(vicon, impact_fp),
-        'End Landing': transform_fp_to_mocap_frame(vicon, end_landing_fp)
+    mocap_events = {1:
+        {
+            'start':  transform_fp_to_mocap_frame(vicon, start_fp),
+            'end': transform_fp_to_mocap_frame(vicon, end_landing_fp),
+            'others': {
+                'toe_off': transform_fp_to_mocap_frame(vicon, toeoff_fp),
+                'impact': transform_fp_to_mocap_frame(vicon, impact_fp),
+            }
+        }
     }
 
     # Write events to Nexus
@@ -211,9 +213,9 @@ def _write_events_to_nexus(vicon, subject, mocap_events: dict):
     for rep, rep_data in mocap_events.items():
         vicon.CreateAnEvent(subject, 'General', 'Start', int(rep_data.get('start')), frame_offset)
         vicon.CreateAnEvent(subject, 'General', 'End', int(rep_data.get('end')), frame_offset)
-        if 'other' in rep_data:
+        if 'others' in rep_data:
             for event_name, frame in rep_data[1:-1]:
-                vicon.CreateAnEvent(subject, 'General', 'Event', int(frame), frame_offset)
+                vicon.CreateAnEvent(subject, 'General', event_name, int(frame), frame_offset)
 
     print("Successfully written events to Nexus.")
 
