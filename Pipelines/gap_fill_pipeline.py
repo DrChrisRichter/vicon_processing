@@ -1,4 +1,3 @@
-
 import numpy as np
 import ezc3d
 import os
@@ -43,7 +42,7 @@ SEGMENTS = {
             'LTIBA': ['LANK', 'LTIB', 'LKNE'],
             'LANK':  ['LTIBA', 'LTIB', 'LKNE'],
             'LTIB':  ['LTIBA', 'LANK', 'LKNE'],
-            'LMM':  ['LTIBA', 'LANK', 'LKNE', 'LTIB']
+            'LMM':   ['LTIBA', 'LANK', 'LKNE', 'LTIB']
         },
         'max_displacement_mm': 45.0
     },
@@ -54,7 +53,7 @@ SEGMENTS = {
             'RTIBA': ['RANK', 'RTIB', 'RKNE'],
             'RANK':  ['RTIBA', 'RTIB', 'RKNE'],
             'RTIB':  ['RTIBA', 'RANK', 'RKNE'],
-            'RMM':  ['RTIBA', 'RANK', 'RKNE', 'RTIB']
+            'RMM':   ['RTIBA', 'RANK', 'RKNE', 'RTIB']
         },
         'max_displacement_mm': 45.0
     },
@@ -115,21 +114,6 @@ def get_gaps(exists_array):
     if in_gap:
         gaps.append({'start': start, 'end': len(exists_array) - 1, 'length': len(exists_array) - start})
     return gaps
-
-def smooth_gap_segment(segment):
-    length = len(segment)
-    if length < 5:
-        return segment
-
-    window_length = min(length if length % 2 != 0 else length - 1, 15)
-    polyorder = 3 if window_length > 3 else 2
-
-    # Pad edges to prevent polynomial "whip" at boundaries
-    pad_size = 5
-    padded = np.concatenate(([segment[0]] * pad_size, segment, [segment[-1]] * pad_size))
-    smoothed = savgol_filter(padded, window_length, polyorder, mode='interp')
-
-    return smoothed[pad_size: -pad_size]
 
 def get_weighted_rigid_transform(A, B, weights):
     weights = np.array(weights)
@@ -193,15 +177,10 @@ def rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post,
         recon_y.append(float(merged[1]))
         recon_z.append(float(merged[2]))
 
-    # Apply Savitzky-Golay smoothing
-    #recon_x = smooth_gap_segment(recon_x)
-    #recon_y = smooth_gap_segment(recon_y)
-    #recon_z = smooth_gap_segment(recon_z)
-
     # Verify output dimensions match gap length before writing
     assert len(recon_x) == gap_length, f"Length mismatch: {len(recon_x)} vs {gap_length}"
 
-    # Write smoothed positions back to gap range
+    # Write reconstructed positions back to gap range
     for idx, i in enumerate(range(start_frame, end_frame + 1)):
         track_data[m_target]['x'][i] = recon_x[idx]
         track_data[m_target]['y'][i] = recon_y[idx]
@@ -251,10 +230,6 @@ def apply_dual_pattern_fill(target_data, donor_data, gap):
             recon_y.append(y_post)
             recon_z.append(z_post)
 
-    recon_x = smooth_gap_segment(recon_x)
-    recon_y = smooth_gap_segment(recon_y)
-    recon_z = smooth_gap_segment(recon_z)
-
     for idx, i in enumerate(range(start, end + 1)):
         target_data['x'][i], target_data['y'][i], target_data['z'][i] = recon_x[idx], recon_y[idx], recon_z[idx]
         target_data['e'][i] = True
@@ -271,12 +246,12 @@ def apply_spline_fill(data, gap, pad=5):
     z_spline = CubicSpline(valid_idx, [data['z'][i] for i in valid_idx])
 
     for i in range(start, end + 1):
-        data['x'][i], data['y'][i], data['z'][i] = x_spline(i), y_spline(i), z_spline(i)
+        data['x'][i], data['y'][i], data['z'][i] = float(x_spline(i)), float(y_spline(i)), float(z_spline(i))
         data['e'][i] = True
     return True
 
 # ---------------------------------------------------------
-# 4. Static Reference Reconstructor
+# 3. Static Reference Reconstruction Helpers
 # ---------------------------------------------------------
 
 def read_c3d(path):
@@ -296,7 +271,6 @@ def read_c3d(path):
         trajectory = points[:3, idx, :].T
         marker_data[label] = trajectory
 
-    # Helper container to mirror your pipeline's data structure
     class C3DContainer:
         def __init__(self, data_dict):
             self.marker_data = data_dict
@@ -308,53 +282,130 @@ def extract_static_marker_reference(vicon_api, file_path=None):
     Locates the static calibration C3D file in the active trial directory,
     extracts pristine 3D coordinates for all available markers, and returns
     a reference dictionary mapping marker names to their baseline 3D positions.
-
-    :param vicon_api: Active ViconNexus API instance.
-    :param file_path: Optional directory path. If None, retrieves path from active Nexus trial.
-    :return: dict mapping {marker_name: np.array([x, y, z])}
     """
-    # 1. Automatically retrieve trial path from Nexus SDK if not provided
     if file_path is None:
         full_trial_path, _ = vicon_api.GetTrialName()
         if not full_trial_path:
             raise RuntimeError("No active trial loaded in Vicon Nexus.")
         file_path = os.path.dirname(full_trial_path)
 
-    # 2. Locate the static reference C3D file in the session directory
     static_files = sorted([
         f for f in os.listdir(file_path)
         if "static" in f.lower() and f.lower().endswith(".c3d") and not f.startswith("._")
-    ])[0]
+    ])
 
-    static_c3d_path = os.path.join(file_path, static_files)
-    print(f"Extracting static reference markers from: {static_files}")
+    if not static_files:
+        raise FileNotFoundError(f"No static reference C3D file found in {file_path}")
 
-    # 3. Read static C3D file
+    static_c3d_path = os.path.join(file_path, static_files[0])
+    print(f"Extracting static reference markers from: {static_files[0]}")
+
     static_data = read_c3d(path=static_c3d_path)
-
-    # 4. Extract mean positions for all valid static markers
     static_reference = {}
 
     for marker_name, trajectory in static_data.marker_data.items():
         if len(trajectory) == 0:
             continue
 
-        # Filter out invalid / zero-filled frames
         valid_frames = [pos for pos in trajectory if not np.all(pos == 0)]
-
         if len(valid_frames) > 0:
-            # Average valid frames to generate a single baseline 3D point
             static_reference[marker_name] = np.mean(valid_frames, axis=0)
 
     print(f"Extracted {len(static_reference)} reference markers from static trial.")
     return static_reference
 
+def reconstruct_missing_marker_from_static(vicon, subject_name, target_marker, segment_config, static_ref_poses):
+    """
+    Reconstructs a completely missing marker (0% active frames) in a dynamic trial
+    by calculating its rigid geometry from active donor markers using static reference positions.
+    """
+    print(f"  > Reconstructing completely missing marker '{target_marker}' from static reference...")
+
+    # Identify segment configuration
+    segment_cfg = None
+    for seg_name, cfg in segment_config.items():
+        if target_marker in cfg['primary'] or target_marker in cfg['emergency']:
+            segment_cfg = cfg
+            break
+
+    if segment_cfg is None or target_marker not in static_ref_poses:
+        return False
+
+    candidate_donors = segment_cfg['primary'] + segment_cfg['emergency']
+    valid_static_donors = [d for d in candidate_donors if d != target_marker and d in static_ref_poses]
+
+    # Pull dynamic trajectories for donors
+    dynamic_donors = {}
+    total_frames = None
+    for d in valid_static_donors:
+        try:
+            x, y, z, e = vicon.GetTrajectory(subject_name, d)
+            if any(e):
+                dynamic_donors[d] = {'x': list(x), 'y': list(y), 'z': list(z), 'e': list(e)}
+                if total_frames is None:
+                    total_frames = len(e)
+        except Exception:
+            continue
+
+    if total_frames is None or len(dynamic_donors) < 3:
+        print(f"  > Warning: Insufficient dynamic donor markers available to reconstruct '{target_marker}'.")
+        return False
+
+    target_static_pos = static_ref_poses[target_marker]
+    active_donors_list = list(dynamic_donors.keys())
+    A_pts_static = np.array([static_ref_poses[d] for d in active_donors_list])
+
+    distances = np.linalg.norm(A_pts_static - target_static_pos, axis=1)
+    weights = 1.0 / (distances + 1e-6)
+
+    recon_x, recon_y, recon_z, recon_e = [], [], [], []
+
+    for f in range(total_frames):
+        active_donors = [d for d in active_donors_list if dynamic_donors[d]['e'][f]]
+
+        if len(active_donors) >= 3:
+            active_idx = [active_donors_list.index(d) for d in active_donors]
+            A_pts = A_pts_static[active_idx]
+            w_pts = weights[active_idx]
+
+            B_pts = np.array([[dynamic_donors[d]['x'][f],
+                               dynamic_donors[d]['y'][f],
+                               dynamic_donors[d]['z'][f]] for d in active_donors])
+
+            R, t = get_weighted_rigid_transform(A_pts, B_pts, w_pts)
+            pos_reconstructed = np.dot(R, target_static_pos.T) + t.T
+
+            recon_x.append(float(pos_reconstructed[0]))
+            recon_y.append(float(pos_reconstructed[1]))
+            recon_z.append(float(pos_reconstructed[2]))
+            recon_e.append(True)
+        else:
+            recon_x.append(0.0)
+            recon_y.append(0.0)
+            recon_z.append(0.0)
+            recon_e.append(False)
+
+    # Create slot if needed and push back to Nexus
+    try:
+        vicon.CreateModeledMarker(subject_name, target_marker)
+    except Exception:
+        pass
+
+    vicon.SetTrajectory(
+        subject_name, target_marker,
+        [float(v) for v in recon_x],
+        [float(v) for v in recon_y],
+        [float(v) for v in recon_z],
+        [bool(v) for v in recon_e]
+    )
+    print(f"  > Successfully reconstructed '{target_marker}' using static geometry.")
+    return True
+
 # ---------------------------------------------------------
-# 3. Core Processing Engine
+# 4. Core Processing Engine
 # ---------------------------------------------------------
 
-def clean_cluster(vicon, subject, cluster_name, config):
-
+def clean_cluster(vicon, subject, cluster_name, config, static_ref_poses):
     print(f"--- Processing Cluster: {cluster_name} ---")
     primary_markers = config['primary']
     emergency_markers = config['emergency']
@@ -362,9 +413,18 @@ def clean_cluster(vicon, subject, cluster_name, config):
     max_displacement = config['max_displacement_mm']
 
     all_markers = primary_markers + emergency_markers
-    static_ref_poses = extract_static_marker_reference(vicon)
 
-    # Load trajectory data for this cluster
+    # Step 1: Reconstruct completely missing markers using static reference pose
+    for m in primary_markers:
+        try:
+            x, y, z, e = vicon.GetTrajectory(subject, m)
+            if not any(e):  # Marker missing entirely in dynamic trial
+                reconstruct_missing_marker_from_static(vicon, subject, m, SEGMENTS, static_ref_poses)
+        except Exception:
+            # Marker trajectory does not exist in Nexus trial
+            reconstruct_missing_marker_from_static(vicon, subject, m, SEGMENTS, static_ref_poses)
+
+    # Load updated trajectory data for cluster
     track_data = {}
     for m in all_markers:
         try:
@@ -421,9 +481,7 @@ def clean_cluster(vicon, subject, cluster_name, config):
                     m: np.array([track_data[m]['x'][f_post], track_data[m]['y'][f_post], track_data[m]['z'][f_post]])
                     for m in valid_donors + [m_target]}
 
-                # Run unified rigid fill helper
-                success, _ = rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post,
-                                            max_displacement)
+                success, _ = rigid_fill_gap(track_data, m_target, gap, valid_donors, pose_pre, pose_post, max_displacement)
                 if success:
                     progress_made = True
                 else:
@@ -440,8 +498,8 @@ def clean_cluster(vicon, subject, cluster_name, config):
             if not progress_made:
                 m_target = gap['marker']
                 pattern_success = False
-                for donor in donor_preferences[m_target]:
-                    if apply_dual_pattern_fill(track_data[m_target], track_data[donor], gap):
+                for donor in donor_preferences.get(m_target, []):
+                    if donor in track_data and apply_dual_pattern_fill(track_data[m_target], track_data[donor], gap):
                         pattern_success = True
                         break
 
@@ -456,31 +514,12 @@ def clean_cluster(vicon, subject, cluster_name, config):
             print(f"  > Warning: {len(all_gaps)} {cluster_name} gaps could not be dynamically filled.")
             break
 
-    # 3. Spline Cleanup & Push to Nexus
+    # 3. Spline Cleanup Pass
     print(f"  > Running final Spline pass for {cluster_name}...")
     for m in primary_markers:
         for gap in get_gaps(track_data[m]['e']):
             if gap['length'] <= 5:
                 apply_spline_fill(track_data[m], gap)
-
-    # 4. Extract Static Reference Poses for Missing Markers
-    try:
-        # Check if any primary markers were missing completely and attempt static-based fill
-        for m in primary_markers:
-            if not any(track_data[m]['e']) and m in static_ref_poses:
-                print(f"  > Reconstructing completely missing marker {m} from static reference...")
-                full_gap = {'start': 0, 'end': total_frames - 1, 'length': total_frames}
-                valid_donors = [d for d in primary_markers + emergency_markers if
-                                d != m and d in static_ref_poses and any(track_data[d]['e'])]
-
-                if len(valid_donors) >= 3:
-                    # Use static calibration positions as reference pre/post poses
-                    pose_static = {d: static_ref_poses[d] for d in valid_donors + [m]}
-                    rigid_fill_gap(
-                        track_data, m, full_gap, valid_donors, pose_static, pose_static, max_displacement
-                    )
-    except Exception as err:
-        print(f"  > Note: Static reference lookup skipped ({err}).")
 
     print(f"  > Pushing {cluster_name} back to Nexus...")
     for m in primary_markers:
@@ -491,20 +530,23 @@ def clean_cluster(vicon, subject, cluster_name, config):
                             [bool(v) for v in track_data[m]['e']])
 
 # ---------------------------------------------------------
-# 4. Main Execution
+# 5. Main Execution
 # ---------------------------------------------------------
 if __name__ == "__main__":
-
     try:
         vicon = ViconNexus.ViconNexus()
         subject = vicon.GetSubjectNames()[0]
 
         print(f"Starting Data Cleaning Pipeline for Subject: {subject}")
 
+        # Extract static reference once at startup
+        static_ref_poses = extract_static_marker_reference(vicon)
+
         # Sequentially clean all defined segments
         for segment_name, config in SEGMENTS.items():
-            clean_cluster(vicon, subject, segment_name, config)
+            clean_cluster(vicon, subject, segment_name, config, static_ref_poses)
 
         print("Pipeline Execution Complete.")
     except Exception as e:
+        print(f"Pipeline Execution Failed: {e}")
         print(f"Pipeline Error: {e}")
