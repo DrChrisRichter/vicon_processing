@@ -56,8 +56,8 @@ def crop_trial(min_required_markers):
 
         if active_count >= min_required_markers:
             if valid_start_frame is None:
-                valid_start_frame = f  # First frame threshold is met
-            valid_end_frame = f  # Updates until the final threshold frame
+                valid_start_frame = f + 3  # First frame threshold is met
+            valid_end_frame = f - 3 # Updates until the final threshold frame
 
     # Apply the crop range to Nexus
     if valid_start_frame is not None:
@@ -77,5 +77,7 @@ def crop_trial(min_required_markers):
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
+
     # Supply your minimum active marker count as input here:
     crop_trial(28)
+    

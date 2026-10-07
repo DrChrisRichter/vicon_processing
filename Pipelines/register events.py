@@ -6,13 +6,13 @@ from viconnexusapi import ViconNexus
 # ---------------------------------------------------------
 # Helper Functions: Force Signal & Frame Synchronization
 # ---------------------------------------------------------
+
 def get_subject_mass(vicon, subject):
     """Retrieves subject body mass in kg from Nexus parameters."""
     try:
         return float(vicon.GetSubjectParam(subject, "Bodymass")[0])
     except Exception:
         return 70.0  # Default fallback mass in kg
-
 
 def get_resultant_fz(vicon):
     """Sum vertical ground reaction forces (Fz) across all connected force plates."""
@@ -21,10 +21,12 @@ def get_resultant_fz(vicon):
         device_ids = vicon.GetDeviceIDs()
         for dev_id in device_ids:
             name, dev_type, rate, _, _, _ = vicon.GetDeviceDetails(dev_id)
+            if name not in ['Left', 'Right']:
+                continue
             if "Force" in dev_type or "Plate" in name:
                 # Channel 3 is standard vertical Fz in Nexus
                 fz, _, _ = vicon.GetDeviceChannel(dev_id, 1, 3)
-                fz_array = np.abs(np.array(fz))
+                fz_array = np.array(fz) * -1
                 if total_fz is None:
                     total_fz = fz_array
                 else:
@@ -35,16 +37,14 @@ def get_resultant_fz(vicon):
     if total_fz is None:
         raise RuntimeError("No force plate Fz signal detected in trial.")
 
-    return total_fz
+    return total_fz, rate
 
-
-def transform_fp_to_mocap_frame(vicon, fp_frame):
+def transform_fp_to_mocap_frame(vicon, fp_frame, fp_rate):
     """Converts a force plate sample index to the corresponding Mocap frame index."""
     if fp_frame is None:
         return None
 
     mocap_rate = vicon.GetFrameRate()
-    fp_rate = 1000.0  # Standard fallback
 
     try:
         for dev_id in vicon.GetDeviceIDs():
@@ -120,11 +120,11 @@ def register_squat_events(vicon, subject, rep_duration: float=1):
     _write_events_to_nexus(vicon, subject, mocap_events)
     return True
 
-def register_dlcmj_events(vicon, subject, threshold_N=20.0):
+def register_cmj_events(vicon, subject, threshold_N=20.0):
     """Detects and registers Double-Leg Countermovement Jump (DLCMJ) events."""
 
     print("--- Registering DLCMJ Events ---")
-    fz_signal = get_resultant_fz(vicon)
+    fz_signal, fp_frame_rate = get_resultant_fz(vicon)
     mass = get_subject_mass(vicon, subject)
     bw_N = mass * 9.81
 
@@ -152,13 +152,13 @@ def register_dlcmj_events(vicon, subject, threshold_N=20.0):
             end_landing_fp = impact_fp + peak_impact + stabilized[0]
 
     # Convert to Mocap frames
-    mocap_events = {1:
-        {
-            'start':  transform_fp_to_mocap_frame(vicon, start_fp),
-            'end': transform_fp_to_mocap_frame(vicon, end_landing_fp),
+    mocap_events = {
+        1: {
+            'start':  transform_fp_to_mocap_frame(vicon, start_fp, fp_frame_rate),
+            'end': transform_fp_to_mocap_frame(vicon, end_landing_fp, fp_frame_rate),
             'others': {
-                'toe_off': transform_fp_to_mocap_frame(vicon, toeoff_fp),
-                'impact': transform_fp_to_mocap_frame(vicon, impact_fp),
+                'toe_off': transform_fp_to_mocap_frame(vicon, toeoff_fp, fp_frame_rate),
+                'impact': transform_fp_to_mocap_frame(vicon, impact_fp, fp_frame_rate),
             }
         }
     }
@@ -167,39 +167,99 @@ def register_dlcmj_events(vicon, subject, threshold_N=20.0):
     _write_events_to_nexus(vicon, subject, mocap_events)
     return True
 
-
-def register_drop_jump_events(vicon, subject, threshold_N=20.0):
+def register_dj_events(vicon, subject, threshold_N=20.0):
     """Detects and registers Drop Jump (DJ) contact and flight phases."""
     print("--- Registering Drop Jump Events ---")
-    fz_signal = get_resultant_fz(vicon)
+    fz_signal, fps = get_resultant_fz(vicon)
 
     # Ground contacts (> threshold_N)
-    contact_idx = np.where(fz_signal > threshold_N)[0]
+    contact_idx = np.where(abs(fz_signal) > threshold_N)[0]
     if len(contact_idx) == 0:
         print("Warning: No force plate contact detected for Drop Jump.")
         return False
 
-    initial_contact_fp = contact_idx[0]
+    ref_frame = np.where(fz_signal > 200)[0][0]
+    impact_1 = np.where(fz_signal[:ref_frame] < threshold_N)[0][-1]
+    toe_off = np.where(fz_signal[ref_frame:] < threshold_N)[0][0] + ref_frame
 
-    # Second flight phase / takeoff
-    flight_after_contact = np.where(fz_signal[initial_contact_fp:] < threshold_N)[0]
-    if len(flight_after_contact) == 0:
-        takeoff_fp = contact_idx[-1]
-        recontact_fp = takeoff_fp
-    else:
-        takeoff_fp = initial_contact_fp + flight_after_contact[0]
-        recontact_idx = np.where(fz_signal[takeoff_fp:] > threshold_N)[0]
-        recontact_fp = takeoff_fp + recontact_idx[0] if len(recontact_idx) > 0 else takeoff_fp
+    ref_frame2 = np.where(fz_signal[toe_off:] > 200)[0][0] + toe_off
+    impact_2 = np.where(fz_signal[:ref_frame2] < threshold_N)[0][-1]
+    end_frame = int(impact_2 + (fps * 2))
+    end_frame = end_frame if end_frame < len(fz_signal) else int(len(fz_signal))
 
     mocap_events = {
-        'Initial Contact': transform_fp_to_mocap_frame(vicon, initial_contact_fp),
-        'Foot Off': transform_fp_to_mocap_frame(vicon, takeoff_fp),
-        'Foot Strike': transform_fp_to_mocap_frame(vicon, recontact_fp)
+        1: {
+            'start': transform_fp_to_mocap_frame(vicon, impact_1, fps),
+            'end': transform_fp_to_mocap_frame(vicon, end_frame, fps),
+            'others': {
+                'toe_off': transform_fp_to_mocap_frame(vicon, toe_off, fps),
+                'impact': transform_fp_to_mocap_frame(vicon, impact_2, fps),
+            }
+        }
     }
 
     _write_events_to_nexus(vicon, subject, mocap_events)
     return True
 
+def register_decel_events(vicon, subject, threshold_N=20.0):
+    """Detects and registers Drop Jump (DJ) contact and flight phases."""
+
+    print("--- Registering Drop Jump Events ---")
+    fz_signal, fps = get_resultant_fz(vicon)
+
+    # Ground contacts (> threshold_N)
+    contact_idx = np.where(abs(fz_signal) > threshold_N)[0]
+    if len(contact_idx) == 0:
+        print("Warning: No force plate contact detected for Drop Jump.")
+        return False
+
+    ref_frame = np.where(fz_signal > 200)[0][0]
+    impact = np.where(fz_signal[:ref_frame] < threshold_N)[0][-1]
+    toe_off = np.where(fz_signal[ref_frame:] < threshold_N)[0][0] + ref_frame
+
+    com, e = vicon.GetModelOutput(subject, "CentreOfMass")
+    com = np.array(com[1])
+    com[com==0] = np.nan
+    pushoff = np.nanargmax(com)
+
+    mocap_events = {
+        1: {
+            'start': transform_fp_to_mocap_frame(vicon, impact, fps),
+            'end': transform_fp_to_mocap_frame(vicon, toe_off, fps),
+            'others': {
+                'push': pushoff,
+            }
+        }
+    }
+
+    _write_events_to_nexus(vicon, subject, mocap_events)
+    return True
+
+def register_cut_events(vicon, subject, threshold_N=20.0):
+    """Detects and registers Drop Jump (DJ) contact and flight phases."""
+
+    print("--- Registering Drop Jump Events ---")
+    fz_signal, fps = get_resultant_fz(vicon)
+
+    # Ground contacts (> threshold_N)
+    contact_idx = np.where(abs(fz_signal) > threshold_N)[0]
+    if len(contact_idx) == 0:
+        print("Warning: No force plate contact detected for Drop Jump.")
+        return False
+
+    ref_frame = np.where(fz_signal > 200)[0][0]
+    impact = np.where(fz_signal[:ref_frame] < threshold_N)[0][-1]
+    toe_off = np.where(fz_signal[ref_frame:] < threshold_N)[0][0] + ref_frame
+
+    mocap_events = {
+        1: {
+            'start': transform_fp_to_mocap_frame(vicon, impact, fps),
+            'end': transform_fp_to_mocap_frame(vicon, toe_off, fps),
+        }
+    }
+
+    _write_events_to_nexus(vicon, subject, mocap_events)
+    return True
 
 # ---------------------------------------------------------
 # Nexus Writer
@@ -214,7 +274,8 @@ def _write_events_to_nexus(vicon, subject, mocap_events: dict):
         vicon.CreateAnEvent(subject, 'General', 'Start', int(rep_data.get('start')), frame_offset)
         vicon.CreateAnEvent(subject, 'General', 'End', int(rep_data.get('end')), frame_offset)
         if 'others' in rep_data:
-            for event_name, frame in rep_data[1:-1]:
+            other_events = rep_data.get('others')
+            for event_name, frame in other_events.items():
                 vicon.CreateAnEvent(subject, 'General', event_name, int(frame), frame_offset)
 
     print("Successfully written events to Nexus.")
@@ -234,5 +295,13 @@ if __name__ == "__main__":
         # Choose the exercise function to run on the active trial
         if 'SQUAT' in file_name.upper():
             register_squat_events(vicon, subject)
-        if 'CMJ' in file_name.upper():
-            register_dlcmj_events(vicon, subject)
+        elif 'CMJ' in file_name.upper():
+            register_cmj_events(vicon, subject)
+        elif 'DJ' in file_name.upper():
+            register_dj_events(vicon, subject)
+        elif 'LONGDEC' in file_name.upper():
+            register_decel_events(vicon, subject)
+        elif ('DECLEFT' in file_name.upper()) or ('DECRIGHT' in file_name.upper()):
+            register_decel_events(vicon, subject)
+        elif 'CUT' in file_name.upper():
+            register_cut_events(vicon, subject)
