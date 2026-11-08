@@ -426,15 +426,20 @@ def clean_cluster(vicon, subject, cluster_name, config, static_ref_poses):
 
     # Load updated trajectory data for cluster
     track_data = {}
+    total_frames = vicon.GetFrameCount()
     for m in all_markers:
         try:
             x, y, z, e = vicon.GetTrajectory(subject, m)
-            track_data[m] = {'x': list(x), 'y': list(y), 'z': list(z), 'e': list(e)}
+            if not e:
+                track_data[m] = {'x': [0] * total_frames,
+                                 'y': [0] * total_frames,
+                                 'z': [0] * total_frames,
+                                 'e': [False] * total_frames}
+            else:
+                track_data[m] = {'x': list(x), 'y': list(y), 'z': list(z), 'e': list(e)}
         except Exception:
             print(f"Warning: Marker {m} not found in trial. Skipping.")
             return
-
-    total_frames = len(track_data[primary_markers[0]]['e'])
 
     all_gaps = []
     for m in primary_markers:
@@ -456,7 +461,21 @@ def clean_cluster(vicon, subject, cluster_name, config, static_ref_poses):
             m_donors_primary = [m for m in primary_markers if m != m_target]
 
             valid_donors = [d for d in m_donors_primary if
-                            all(track_data[d]['e'][i] for i in range(gap['start'], gap['end'] + 1))]
+                            all(track_data[d]['e'][i] for i in range(gap['start'], gap['end'] + 1 ))]
+
+            valid_donors = []
+            for d in m_donors_primary:
+                is_valid = True  # Assume the donor is valid until proven otherwise
+                # Check every frame in the gap
+                for i in range(gap['start'], gap['end'] + 1):
+                    if not track_data[d]['e'][i]:
+                        is_valid = False
+                        break  # Stop checking this donor as soon as one frame fails (mimics all())
+                # If the flag survived the loop, add the donor
+                if is_valid:
+                    valid_donors.append(d)
+
+
             if len(valid_donors) < 3:
                 valid_emergency = [d for d in emergency_markers if
                                    all(track_data[d]['e'][i] for i in range(gap['start'], gap['end'] + 1))]
@@ -516,10 +535,14 @@ def clean_cluster(vicon, subject, cluster_name, config, static_ref_poses):
 
     # 3. Spline Cleanup Pass
     print(f"  > Running final Spline pass for {cluster_name}...")
-    for m in primary_markers:
-        for gap in get_gaps(track_data[m]['e']):
-            if gap['length'] <= 5:
-                apply_spline_fill(track_data[m], gap)
+    for gap in all_gaps:
+        m = gap.get('marker')
+        if gap['length'] <= 5:
+            apply_spline_fill(track_data[m], gap)
+        else:
+            if gap.get('start') == 0:
+                continue
+            hu = 5
 
     print(f"  > Pushing {cluster_name} back to Nexus...")
     for m in primary_markers:
@@ -529,10 +552,12 @@ def clean_cluster(vicon, subject, cluster_name, config, static_ref_poses):
                             [float(v) for v in track_data[m]['z']],
                             [bool(v) for v in track_data[m]['e']])
 
+
 # ---------------------------------------------------------
 # 5. Main Execution
 # ---------------------------------------------------------
 if __name__ == "__main__":
+
     try:
         vicon = ViconNexus.ViconNexus()
         subject = vicon.GetSubjectNames()[0]
@@ -544,9 +569,13 @@ if __name__ == "__main__":
 
         # Sequentially clean all defined segments
         for segment_name, config in SEGMENTS.items():
-            clean_cluster(vicon, subject, segment_name, config, static_ref_poses)
+            try:
+                clean_cluster(vicon, subject, segment_name, config, static_ref_poses)
+            except:
+                hu = 5
 
         print("Pipeline Execution Complete.")
+
     except Exception as e:
         print(f"Pipeline Execution Failed: {e}")
         print(f"Pipeline Error: {e}")

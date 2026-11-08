@@ -33,7 +33,7 @@ def crop_trial_by_marker_completeness(frame_buffer=3):
     # 1. Create a master list of every event name your lab might EVER use.
     try:
         t0 = vicon.GetEvents(subject, 'General', 'Start')[0][0]
-        tn = vicon.GetEvents(subject, 'General', 'End')[0][0]
+        tn = vicon.GetEvents(subject, 'General', 'End')[0][-1]
         frame_rate = vicon.GetFrameRate()
         # 3. Calculate exactly 1 second before the event
         t0 = t0 - frame_rate

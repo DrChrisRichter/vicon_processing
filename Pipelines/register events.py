@@ -74,15 +74,14 @@ def register_squat_events(vicon, subject, rep_duration: float=1):
     # 1. Extract Center of Mass Z-trajectory (or Pelvis / LASI proxy if COM output not modeled)
     try:
         # Attempt to pull modeled Center of Mass trajectory
-        _, _, z, e = vicon.GetModelOutput(subject, "CentreOfMass")
+        (_, _, z), e = vicon.GetModelOutput(subject, "CentreOfMass")
         com_z = np.array(z)
     except ValueError:
         # Fallback to Pelvis marker (LASI) if CenterOfMass is not present
         try:
-            _, _, z1, e = vicon.GetTrajectory(subject, "LASI")
-            _, _, z2, e = vicon.GetTrajectory(subject, "RASI")
-            _, _, z3, e = vicon.GetTrajectory(subject, "LPSI")
-            _, _, z4, e = vicon.GetTrajectory(subject, "RPSI")
+            (_, _, z1), _, z2, e = vicon.GetTrajectory(subject, "RASI")
+            (_, _, z3), e = vicon.GetTrajectory(subject, "LPSI")
+            (_, _, z4), e = vicon.GetTrajectory(subject, "RPSI")
             com_z = np.mean([z1, z2, z3, z4], axis=0)
             print("  > Using pelvis marker trajectory as Center of Mass proxy.")
         except Exception as err:
@@ -95,8 +94,10 @@ def register_squat_events(vicon, subject, rep_duration: float=1):
 
     # 2. Identify all local minima (bottom of squats)
     # Find peaks on inverted signal (minima on original COM signal)
-    min_vals = np.percentile(com_z, 15)
-    max_vals = np.max(com_z) * .90
+    com_z = np.array(com_z)
+    com_z[com_z == 0] = np.nan
+    min_vals = np.nanpercentile(com_z, 15)
+    max_vals = np.nanmax(com_z) * .90
     com_velo = np.gradient(com_z)
 
     # 3. Process each rep: Calculate 98% standing threshold start and end frames
